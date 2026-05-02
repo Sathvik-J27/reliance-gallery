@@ -1,0 +1,12 @@
+-- Storage bucket setup (run these in Supabase dashboard or via CLI):
+--
+-- supabase storage create event-media --private
+-- supabase storage create event-thumbnails --public
+--
+-- RLS policies for storage are managed through the Supabase dashboard.
+-- event-media: Authenticated users can upload; downloads via signed URL only.
+-- event-thumbnails: Public read access; only service role can write.
+
+-- App settings for edge function URL (set these after deploying the edge function)
+-- alter database postgres set app.edge_function_url = 'https://<project>.supabase.co/functions/v1';
+-- alter database postgres set app.service_role_key = '<service-role-key>';
