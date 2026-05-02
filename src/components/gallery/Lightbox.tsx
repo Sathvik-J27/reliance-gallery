@@ -197,7 +197,7 @@ export function Lightbox({
     const absDy = Math.abs(dy)
 
     if (absDx > 60 && absDx > absDy * 1.5) {
-      dx > 0 ? goPrev() : goNext()
+      if (dx > 0) { goPrev() } else { goNext() }
     } else if (dy > 100 && absDy > absDx * 1.5) {
       onClose()
     }

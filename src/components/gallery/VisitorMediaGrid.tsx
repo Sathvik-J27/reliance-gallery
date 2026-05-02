@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useEffect, useState, useCallback } from 'react'
+import { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import { Camera, CheckSquare, Square, Download, X, FilterX } from 'lucide-react'
 import { useVisitorGalleryMedia } from '@/hooks/useVisitorGalleryMedia'
 import { MediaTile } from './MediaTile'
@@ -31,7 +31,10 @@ export function VisitorMediaGrid({ eventId, filters }: VisitorMediaGridProps) {
     fetchNextPage,
   } = useVisitorGalleryMedia(eventId, filters)
 
-  const allMedia: MediaWithUploader[] = data?.pages.flatMap((p) => p.media) ?? []
+  const allMedia: MediaWithUploader[] = useMemo(
+    () => data?.pages.flatMap((p) => p.media) ?? [],
+    [data]
+  )
 
   // Reset selection when filters change
   useEffect(() => {
