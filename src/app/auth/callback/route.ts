@@ -7,13 +7,11 @@ export async function GET(request: NextRequest) {
 
   if (code) {
     const supabase = await createClient()
-    const { data, error } = await supabase.auth.exchangeCodeForSession(code)
+    const { error } = await supabase.auth.exchangeCodeForSession(code)
 
     if (!error) {
-      const isRecovery = data.session?.user?.amr?.some(
-        (a: { method: string }) => a.method === 'recovery'
-      )
-      const dest = isRecovery ? '/auth/reset-password' : '/dashboard'
+      const type = searchParams.get('type')
+      const dest = type === 'recovery' ? '/auth/reset-password' : '/dashboard'
       return NextResponse.redirect(`${origin}${dest}`)
     }
   }
