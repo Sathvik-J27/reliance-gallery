@@ -1,9 +1,10 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { X, ChevronLeft, ChevronRight, Download, Star } from 'lucide-react'
+import { X, ChevronLeft, ChevronRight, Download, Star, Volume2, VolumeX } from 'lucide-react'
 import { getSignedUrl } from '@/app/actions/media'
 import type { MediaWithUploader } from '@/app/actions/media'
+import { VisitorWatermark } from './VisitorWatermark'
 import { cn } from '@/lib/utils'
 
 interface LightboxProps {
@@ -13,6 +14,8 @@ interface LightboxProps {
   isFavorited: (id: string) => boolean
   onToggleFavorite: (id: string) => void
   isAuthenticated: boolean
+  isVisitor?: boolean
+  visitorLabel?: string
   onReachEnd?: () => void
 }
 
@@ -46,11 +49,14 @@ export function Lightbox({
   isFavorited,
   onToggleFavorite,
   isAuthenticated,
+  isVisitor = false,
+  visitorLabel,
   onReachEnd,
 }: LightboxProps) {
   const [idx, setIdx] = useState(initialIndex)
   const [currentUrl, setCurrentUrl] = useState<string | null>(null)
   const [isLoadingUrl, setIsLoadingUrl] = useState(false)
+  const [fullLoaded, setFullLoaded] = useState(false)
   const [zoom, setZoom] = useState({ scale: 1, x: 0, y: 0 })
   const [showMeta, setShowMeta] = useState(true)
   const [isMuted, setIsMuted] = useState(true)
@@ -76,6 +82,12 @@ export function Lightbox({
 
   const fetchUrl = useCallback(async (m: MediaWithUploader) => {
     if (urlCache.current.has(m.id)) return urlCache.current.get(m.id)!
+    // Use the pre-signed URL from the server action if available (no round-trip).
+    const preSignedUrl = m.signed_url ?? null
+    if (preSignedUrl) {
+      urlCache.current.set(m.id, preSignedUrl)
+      return preSignedUrl
+    }
     const { url } = await getSignedUrl(m.storage_path)
     if (url) urlCache.current.set(m.id, url)
     return url ?? null
@@ -94,10 +106,11 @@ export function Lightbox({
     if (media[idx + 1]) fetchUrl(media[idx + 1])
   }, [idx, item, fetchUrl, media])
 
-  // Reset zoom and mute on navigation
+  // Reset zoom, mute, and fullLoaded on navigation
   useEffect(() => {
     setZoom({ scale: 1, x: 0, y: 0 })
     setIsMuted(true)
+    setFullLoaded(false)
   }, [idx])
 
   // Trigger load-more when near end
@@ -203,12 +216,12 @@ export function Lightbox({
     }
   }
 
-  const handleUnmute = () => {
-    if (videoRef.current) {
-      videoRef.current.muted = false
-      videoRef.current.volume = 1
-      setIsMuted(false)
-    }
+  const handleToggleMute = () => {
+    if (!videoRef.current) return
+    const next = !isMuted
+    videoRef.current.muted = next
+    videoRef.current.volume = next ? 0 : 1
+    setIsMuted(next)
   }
 
   const handleDownload = async () => {
@@ -259,19 +272,21 @@ export function Lightbox({
               />
             </button>
           )}
-          <button
-            onClick={handleDownload}
-            className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 hover:bg-white/25 transition-colors"
-            aria-label="Download"
-          >
-            <Download className="h-5 w-5 text-white" />
-          </button>
+          {!isVisitor && (
+            <button
+              onClick={handleDownload}
+              className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 hover:bg-white/25 transition-colors"
+              aria-label="Download"
+            >
+              <Download className="h-5 w-5 text-white" />
+            </button>
+          )}
         </div>
       </div>
 
       {/* ── Content area ── */}
       <div
-        className="flex-1 flex items-center justify-center relative overflow-hidden"
+        className="flex-1 flex items-center justify-center relative overflow-hidden min-h-0 px-2 py-2"
         onClick={() => setShowMeta((v) => !v)}
       >
         {/* Desktop prev arrow */}
@@ -298,27 +313,60 @@ export function Lightbox({
         {/* Media */}
         {item.file_type === 'image' ? (
           <div
+            className="relative flex items-center justify-center w-full h-full"
             style={{
               transform: `translate(${zoom.x}px,${zoom.y}px) scale(${zoom.scale})`,
               transition: zoom.scale === 1 ? 'transform 0.2s' : 'none',
               willChange: 'transform',
             }}
+            onContextMenu={isVisitor ? (e) => e.preventDefault() : undefined}
           >
-            {isLoadingUrl ? (
-              <div className="w-[min(90vw,600px)] h-[min(80vh,400px)] bg-white/5 animate-pulse rounded" />
-            ) : currentUrl ? (
+            {/* Blurred thumbnail — visible instantly while the full image loads */}
+            {item.thumbnail_url && !fullLoaded && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={item.thumbnail_url}
+                alt=""
+                aria-hidden
+                className="absolute inset-0 w-full h-full object-contain blur-sm scale-105"
+              />
+            )}
+
+            {/* Full-res original — crossfades in once loaded */}
+            {currentUrl && (
               // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={currentUrl}
                 alt={item.original_filename ?? 'Photo'}
-                className="max-w-[95vw] max-h-[85vh] object-contain rounded"
+                className="relative w-full h-full object-contain transition-opacity duration-500"
+                style={{ opacity: fullLoaded ? 1 : 0 }}
+                onLoad={() => setFullLoaded(true)}
                 draggable={false}
               />
-            ) : null}
+            )}
+
+            {/* Skeleton — only when there is no thumbnail and no URL yet */}
+            {!item.thumbnail_url && !currentUrl && (
+              <div className="w-[min(90vw,600px)] h-[min(80vh,400px)] bg-white/5 animate-pulse rounded" />
+            )}
+
+            {/* Invisible overlay to block drag-save in visitor mode */}
+            {isVisitor && (
+              <div
+                className="absolute inset-0 z-10 media-overlay"
+                onDragStart={(e) => e.preventDefault()}
+                style={{ WebkitUserDrag: 'none' } as React.CSSProperties}
+              />
+            )}
+
+            {/* Watermark */}
+            {isVisitor && visitorLabel && (
+              <VisitorWatermark label={visitorLabel} />
+            )}
           </div>
         ) : (
           <div
-            className="relative"
+            className="relative flex items-center justify-center w-full h-full"
             onClick={(e) => e.stopPropagation()}
           >
             {isLoadingUrl ? (
@@ -331,17 +379,26 @@ export function Lightbox({
                   autoPlay
                   muted
                   playsInline
-                  controls={!isMuted}
-                  className="max-w-[95vw] max-h-[85vh] rounded"
+                  controls={isVisitor ? false : !isMuted}
+                  className="max-w-full max-h-full rounded"
                 />
-                {isMuted && (
+                {/* Mute/unmute — always shown for visitors; shown for authenticated when muted */}
+                {(isVisitor || isMuted) && (
                   <button
                     className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full bg-black/60 px-4 py-1.5 text-white text-sm font-inter hover:bg-black/80 transition-colors"
-                    onClick={handleUnmute}
+                    onClick={handleToggleMute}
                   >
-                    <span className="text-base leading-none">🔇</span>
-                    Tap to unmute
+                    {isMuted ? (
+                      <><VolumeX className="h-4 w-4" /> Tap to unmute</>
+                    ) : (
+                      <><Volume2 className="h-4 w-4" /> Tap to mute</>
+                    )}
                   </button>
+                )}
+
+                {/* Watermark for visitors */}
+                {isVisitor && visitorLabel && (
+                  <VisitorWatermark label={visitorLabel} />
                 )}
               </>
             ) : null}

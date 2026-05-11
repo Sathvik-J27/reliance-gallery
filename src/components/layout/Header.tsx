@@ -3,6 +3,7 @@
 import Image from 'next/image'
 import Link from 'next/link'
 import { useState } from 'react'
+import { usePathname, useRouter } from 'next/navigation'
 import { Menu, X, ChevronDown, LogOut, User, ShieldCheck } from 'lucide-react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { cn } from '@/lib/utils'
@@ -22,11 +23,20 @@ function getInitials(name: string | null, email: string): string {
 }
 
 export function Header() {
+  const router = useRouter()
   const [mobileOpen, setMobileOpen] = useState(false)
+  const pathname = usePathname()
   const { user, isLoading: userLoading } = useUser()
   const { profile } = useProfile()
 
   const isAuthenticated = !!user
+  const isHomePage = pathname === '/'
+
+  async function handleSignOut() {
+    await signOut()
+    router.push('/')
+    router.refresh()
+  }
 
   return (
     <header
@@ -55,7 +65,7 @@ export function Header() {
 
         {/* Desktop navigation */}
         <nav className="hidden md:flex items-center gap-6" aria-label="Main navigation">
-          {!userLoading && (
+          {!userLoading && !isHomePage && (
             <>
               {isAuthenticated ? (
                 <>
@@ -157,7 +167,7 @@ export function Header() {
 
                         <DropdownMenu.Item asChild>
                           <button
-                            onClick={() => signOut()}
+                            onClick={handleSignOut}
                             className={cn(
                               'flex w-full items-center gap-2 rounded-lg px-3 py-2',
                               'text-sm font-inter text-red-600',
@@ -195,7 +205,8 @@ export function Header() {
         <button
           type="button"
           className={cn(
-            'md:hidden inline-flex items-center justify-center',
+            isHomePage ? 'hidden' : 'md:hidden',
+            'inline-flex items-center justify-center',
             'rounded-md p-2 text-brand-text',
             'hover:bg-brand-border hover:text-gold',
             'transition-colors duration-150',
@@ -210,7 +221,7 @@ export function Header() {
       </div>
 
       {/* Mobile nav panel */}
-      {mobileOpen && (
+      {mobileOpen && !isHomePage && (
         <div className="md:hidden border-t border-brand-border bg-brand-bg">
           <nav
             className="flex flex-col px-4 py-3 gap-1"
@@ -286,7 +297,7 @@ export function Header() {
                 <button
                   onClick={() => {
                     setMobileOpen(false)
-                    signOut()
+                    handleSignOut()
                   }}
                   className={cn(
                     'block w-full text-left rounded-md px-3 py-2',

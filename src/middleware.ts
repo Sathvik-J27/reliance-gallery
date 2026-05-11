@@ -1,6 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { updateSession } from '@/lib/supabase/middleware'
-import { createServerClient } from '@supabase/ssr'
 
 // Routes that require authentication (staff/admin)
 const AUTH_REQUIRED_PREFIXES = ['/dashboard', '/events', '/admin', '/favorites']
@@ -25,41 +24,15 @@ function requiresVisitorAccess(pathname: string): boolean {
 }
 
 export async function middleware(request: NextRequest) {
-  // updateSession must run first to refresh tokens and set cookies correctly
-  const response = await updateSession(request)
+  // updateSession refreshes the token and returns the validated user in one call —
+  // reuse it below instead of calling getUser() a second time.
+  const { response, user } = await updateSession(request)
   const { pathname } = request.nextUrl
 
   // Skip guards for public routes
   if (isPublic(pathname)) {
     return response
   }
-
-  // We need a fresh Supabase client that reads from the refreshed cookies on
-  // the response (updateSession may have set new tokens).
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll() {
-          return request.cookies.getAll()
-        },
-        setAll(cookiesToSet: { name: string; value: string; options?: Record<string, unknown> }[]) {
-          cookiesToSet.forEach(({ name, value, options }) =>
-            response.cookies.set(
-              name,
-              value,
-              options as Parameters<typeof response.cookies.set>[2]
-            )
-          )
-        },
-      },
-    }
-  )
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
 
   // Auth-protected routes
   if (requiresAuth(pathname)) {

@@ -121,7 +121,7 @@ export default function DropZone({ onFilesSelected, disabled }: DropZoneProps) {
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*,video/*"
+        accept="image/*,video/*,.heic,.heif"
         multiple
         className="sr-only"
         onChange={onInputChange}

@@ -1,26 +1,22 @@
 'use client'
 
-import { useRef, useEffect, useState, useCallback, useMemo } from 'react'
-import { Camera, CheckSquare, Square, Download, X, FilterX } from 'lucide-react'
+import { useRef, useEffect, useState, useMemo } from 'react'
+import { Camera, FilterX } from 'lucide-react'
 import { useVisitorGalleryMedia } from '@/hooks/useVisitorGalleryMedia'
 import { MediaTile } from './MediaTile'
 import { GallerySkeleton } from './MediaSkeleton'
 import { Lightbox } from './Lightbox'
-import { getSignedUrl } from '@/app/actions/media'
-import { cn } from '@/lib/utils'
 import type { MediaWithUploader } from '@/app/actions/gallery'
 import type { GalleryFilters } from '@/hooks/useGalleryMedia'
 
 interface VisitorMediaGridProps {
   eventId: string
   filters?: GalleryFilters
+  visitorLabel: string
 }
 
-export function VisitorMediaGrid({ eventId, filters }: VisitorMediaGridProps) {
+export function VisitorMediaGrid({ eventId, filters, visitorLabel }: VisitorMediaGridProps) {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
-  const [selectMode, setSelectMode] = useState(false)
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [downloadStatus, setDownloadStatus] = useState<string | null>(null)
   const sentinelRef = useRef<HTMLDivElement>(null)
 
   const {
@@ -35,12 +31,6 @@ export function VisitorMediaGrid({ eventId, filters }: VisitorMediaGridProps) {
     () => data?.pages.flatMap((p) => p.media) ?? [],
     [data]
   )
-
-  // Reset selection when filters change
-  useEffect(() => {
-    setSelectedIds(new Set())
-    setSelectMode(false)
-  }, [filters])
 
   // Infinite scroll sentinel
   useEffect(() => {
@@ -57,59 +47,6 @@ export function VisitorMediaGrid({ eventId, filters }: VisitorMediaGridProps) {
     observer.observe(el)
     return () => observer.disconnect()
   }, [hasNextPage, isFetchingNextPage, fetchNextPage])
-
-  function toggleSelectMode() {
-    setSelectMode((prev) => {
-      if (prev) setSelectedIds(new Set())
-      return !prev
-    })
-  }
-
-  function toggleItem(id: string) {
-    setSelectedIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
-
-  function selectAll() {
-    setSelectedIds(new Set(allMedia.map((m) => m.id)))
-  }
-
-  const handleBulkDownload = useCallback(async () => {
-    const items = allMedia.filter((m) => selectedIds.has(m.id))
-    if (!items.length) return
-
-    setDownloadStatus(`Downloading 1 of ${items.length}…`)
-
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i]
-      setDownloadStatus(`Downloading ${i + 1} of ${items.length}…`)
-      try {
-        const { url } = await getSignedUrl(item.storage_path)
-        if (!url) continue
-        await new Promise<void>((resolve) => {
-          setTimeout(() => {
-            const a = document.createElement('a')
-            a.href = url
-            a.download = item.original_filename ?? `download-${item.id}`
-            document.body.appendChild(a)
-            a.click()
-            document.body.removeChild(a)
-            resolve()
-          }, i * 400) // stagger to avoid browser blocking
-        })
-      } catch {
-        // continue with next item on error
-      }
-    }
-
-    setDownloadStatus(null)
-    setSelectedIds(new Set())
-    setSelectMode(false)
-  }, [allMedia, selectedIds])
 
   const hasActiveFilters = !!(
     filters?.fileType || filters?.uploaderId || filters?.dateFrom || filters?.dateTo
@@ -139,106 +76,28 @@ export function VisitorMediaGrid({ eventId, filters }: VisitorMediaGridProps) {
     )
   }
 
-  const selectedCount = selectedIds.size
-
   return (
     <>
       {/* ── Toolbar ── */}
-      <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+      <div className="mb-4">
         <p className="font-inter text-sm text-gray-500">
           {allMedia.length}{hasNextPage ? '+' : ''} item{allMedia.length !== 1 ? 's' : ''}
         </p>
-
-        <div className="flex items-center gap-2">
-          {selectMode && (
-            <>
-              <button
-                onClick={selectAll}
-                className="font-inter text-xs text-gold hover:underline"
-              >
-                Select all
-              </button>
-              <span className="text-brand-border">|</span>
-              <span className="font-inter text-xs text-gray-500">
-                {selectedCount} selected
-              </span>
-            </>
-          )}
-
-          <button
-            onClick={toggleSelectMode}
-            className={cn(
-              'flex items-center gap-1.5 rounded-lg px-3 py-1.5',
-              'font-inter text-xs font-medium transition-colors duration-150',
-              selectMode
-                ? 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                : 'bg-gold/10 text-gold hover:bg-gold/20'
-            )}
-          >
-            {selectMode ? (
-              <><X className="h-3.5 w-3.5" /> Cancel</>
-            ) : (
-              <><CheckSquare className="h-3.5 w-3.5" /> Select</>
-            )}
-          </button>
-        </div>
       </div>
 
       {/* ── Grid ── */}
       <div className="columns-2 sm:columns-3 lg:columns-4 gap-2">
         {allMedia.map((item, i) => (
-          <div key={item.id} className="relative break-inside-avoid mb-2">
-            {selectMode ? (
-              /* Selection tile wrapper */
-              <button
-                className={cn(
-                  'block w-full text-left focus-visible:outline-none',
-                  'focus-visible:ring-2 focus-visible:ring-gold rounded-sm'
-                )}
-                onClick={() => toggleItem(item.id)}
-                aria-label={
-                  selectedIds.has(item.id)
-                    ? `Deselect ${item.original_filename ?? 'item'}`
-                    : `Select ${item.original_filename ?? 'item'}`
-                }
-              >
-                <MediaTile
-                  item={item}
-                  onClick={() => {}} // handled by button wrapper
-                  isFavorited={false}
-                  onToggleFavorite={() => {}}
-                  isAuthenticated={false}
-                  index={i}
-                />
-                {/* Selection overlay */}
-                <div
-                  className={cn(
-                    'absolute inset-0 rounded-sm transition-all duration-150',
-                    selectedIds.has(item.id)
-                      ? 'ring-2 ring-gold bg-gold/20'
-                      : 'hover:bg-white/10'
-                  )}
-                />
-                {/* Checkbox indicator */}
-                <div className="absolute top-2 left-2 z-10">
-                  {selectedIds.has(item.id) ? (
-                    <CheckSquare className="h-5 w-5 text-gold drop-shadow" />
-                  ) : (
-                    <Square className="h-5 w-5 text-white drop-shadow opacity-70" />
-                  )}
-                </div>
-              </button>
-            ) : (
-              <MediaTile
-                item={item}
-                onClick={() => setSelectedIndex(i)}
-                isFavorited={false}
-                onToggleFavorite={() => {}}
-                isAuthenticated={false}
-                index={i}
-              />
-            )}
-          </div>
+          <MediaTile
+            key={item.id}
+            item={item}
+            onClick={() => setSelectedIndex(i)}
+            isFavorited={false}
+            onToggleFavorite={() => {}}
+            isAuthenticated={false}
+            visitorLabel={visitorLabel}
+            index={i}
+          />
         ))}
       </div>
 
@@ -251,8 +110,8 @@ export function VisitorMediaGrid({ eventId, filters }: VisitorMediaGridProps) {
         </div>
       )}
 
-      {/* ── Lightbox (view mode only) ── */}
-      {!selectMode && selectedIndex !== null && (
+      {/* ── Lightbox ── */}
+      {selectedIndex !== null && (
         <Lightbox
           media={allMedia}
           initialIndex={selectedIndex}
@@ -260,40 +119,12 @@ export function VisitorMediaGrid({ eventId, filters }: VisitorMediaGridProps) {
           isFavorited={() => false}
           onToggleFavorite={() => {}}
           isAuthenticated={false}
+          isVisitor={true}
+          visitorLabel={visitorLabel}
           onReachEnd={() => {
             if (hasNextPage && !isFetchingNextPage) fetchNextPage()
           }}
         />
-      )}
-
-      {/* ── Bulk download FAB ── */}
-      {selectMode && selectedCount > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40">
-          <button
-            onClick={handleBulkDownload}
-            disabled={!!downloadStatus}
-            className={cn(
-              'flex items-center gap-2 rounded-full shadow-xl',
-              'bg-gold text-black font-inter font-semibold text-sm',
-              'px-6 py-3 transition-all duration-200',
-              downloadStatus
-                ? 'opacity-70 cursor-wait'
-                : 'hover:bg-gold-hover hover:-translate-y-0.5 hover:shadow-2xl active:translate-y-0'
-            )}
-          >
-            {downloadStatus ? (
-              <>
-                <div className="h-4 w-4 rounded-full border-2 border-black border-t-transparent animate-spin" />
-                {downloadStatus}
-              </>
-            ) : (
-              <>
-                <Download className="h-4 w-4" />
-                Download {selectedCount} item{selectedCount !== 1 ? 's' : ''}
-              </>
-            )}
-          </button>
-        </div>
       )}
     </>
   )

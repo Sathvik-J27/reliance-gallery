@@ -11,10 +11,10 @@
  *   - Download the uploaded file from the `event-media` bucket.
  *   - For images: generate a 600 px-wide JPEG thumbnail via the Supabase
  *     image transformation API, upload to `event-thumbnails`, and update
- *     the `media` row with `thumbnail_path`.
- *   - For videos: set `thumbnail_path` to the original storage path as a
- *     placeholder. Full frame-extraction requires ffmpeg WASM and should
- *     be handled by a dedicated background worker.
+ *     the `media` row with `thumbnail_path` and `processing_status = 'done'`.
+ *   - For videos: if the client already uploaded a thumbnail (Phase 7),
+ *     just mark done. Otherwise set `thumbnail_path` to the storage path
+ *     as a placeholder.
  */
 
 import { createClient } from '@supabase/supabase-js'
@@ -36,11 +36,16 @@ interface MediaRecord {
   duration_seconds: number | null
   original_filename: string | null
   created_at: string
+  processing_status: string | null
+  processing_error: string | null
+  processing_attempts: number | null
 }
 
 interface RequestBody {
   record: MediaRecord
 }
+
+const headers = { 'Content-Type': 'application/json' }
 
 // ---------------------------------------------------------------------------
 // Handler
@@ -50,7 +55,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
   if (req.method !== 'POST') {
     return new Response(JSON.stringify({ error: 'Method not allowed' }), {
       status: 405,
-      headers: { 'Content-Type': 'application/json' },
+      headers,
     })
   }
 
@@ -60,7 +65,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
   if (!supabaseUrl || !serviceRoleKey) {
     return new Response(
       JSON.stringify({ error: 'Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY env vars' }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
+      { status: 500, headers }
     )
   }
 
@@ -71,7 +76,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
   } catch {
     return new Response(JSON.stringify({ error: 'Invalid JSON body' }), {
       status: 400,
-      headers: { 'Content-Type': 'application/json' },
+      headers,
     })
   }
 
@@ -79,7 +84,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
   if (!record?.id || !record?.storage_path) {
     return new Response(
       JSON.stringify({ error: 'Missing required fields in record' }),
-      { status: 400, headers: { 'Content-Type': 'application/json' } }
+      { status: 400, headers }
     )
   }
 
@@ -88,26 +93,32 @@ Deno.serve(async (req: Request): Promise<Response> => {
     auth: { autoRefreshToken: false, persistSession: false },
   })
 
+  // Atomically mark the record as processing and increment the attempt counter
+  await supabase.rpc('increment_processing_attempts', { media_id: record.id })
+
   try {
     if (record.file_type === 'image') {
       await processImage(supabase, supabaseUrl, serviceRoleKey, record)
     } else if (record.file_type === 'video') {
       await processVideo(supabase, record)
+    } else {
+      // Unknown file_type: still mark done so it doesn't get retried forever
+      await supabase
+        .from('media')
+        .update({ processing_status: 'done' })
+        .eq('id', record.id)
     }
-    // Unknown file_type: skip silently
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.error(`[process-media] Error processing ${record.id}:`, message)
-    return new Response(JSON.stringify({ error: message }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    })
+    await supabase
+      .from('media')
+      .update({ processing_status: 'failed', processing_error: message })
+      .eq('id', record.id)
+    return new Response(JSON.stringify({ error: message }), { status: 500, headers })
   }
 
-  return new Response(JSON.stringify({ ok: true }), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' },
-  })
+  return new Response(JSON.stringify({ ok: true }), { status: 200, headers })
 })
 
 // ---------------------------------------------------------------------------
@@ -154,10 +165,10 @@ async function processImage(
     throw new Error(`Thumbnail upload failed: ${uploadError.message}`)
   }
 
-  // Update the media record with the thumbnail path
+  // Mark done and store thumbnail path
   const { error: updateError } = await supabase
     .from('media')
-    .update({ thumbnail_path: thumbnailPath })
+    .update({ processing_status: 'done', thumbnail_path: thumbnailPath, processing_error: null })
     .eq('id', record.id)
 
   if (updateError) {
@@ -172,17 +183,20 @@ async function processVideo(
   supabase: ReturnType<typeof createClient>,
   record: MediaRecord
 ): Promise<void> {
-  // TODO: Full video frame extraction requires ffmpeg WASM which is too heavy
-  // for an edge function. A dedicated background worker (e.g. a Fly.io machine
-  // or a queue-based worker with ffmpeg installed) should handle frame extraction
-  // and upload the result to `event-thumbnails`.
-  //
-  // For now, set thumbnail_path to the original storage path so the gallery
-  // can render the <video> element directly for preview.
+  // If the client already captured a poster frame (Phase 7), nothing to do.
+  if (record.thumbnail_path) {
+    await supabase
+      .from('media')
+      .update({ processing_status: 'done', processing_error: null })
+      .eq('id', record.id)
+    return
+  }
 
+  // Client thumbnail capture failed or wasn't sent. Just mark done with no thumbnail
+  // so the gallery shows a clean video placeholder rather than a broken image URL.
   const { error } = await supabase
     .from('media')
-    .update({ thumbnail_path: record.storage_path })
+    .update({ processing_status: 'done', processing_error: null })
     .eq('id', record.id)
 
   if (error) {

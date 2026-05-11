@@ -1,10 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { Loader2 } from 'lucide-react'
+import { Loader2, ImagePlus, X } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   Dialog,
@@ -18,7 +18,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { createEvent } from '@/app/actions/events'
+import { createEvent, uploadEventCover } from '@/app/actions/events'
 
 const schema = z.object({
   name: z
@@ -43,6 +43,9 @@ export function CreateEventModal({
   onSuccess,
 }: CreateEventModalProps) {
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [coverFile, setCoverFile] = useState<File | null>(null)
+  const [coverPreview, setCoverPreview] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const {
     register,
@@ -58,6 +61,21 @@ export function CreateEventModal({
     },
   })
 
+  function handleCoverSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (coverPreview) URL.revokeObjectURL(coverPreview)
+    setCoverFile(file)
+    setCoverPreview(URL.createObjectURL(file))
+  }
+
+  function removeCover() {
+    if (coverPreview) URL.revokeObjectURL(coverPreview)
+    setCoverFile(null)
+    setCoverPreview(null)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
   async function onSubmit(values: FormValues) {
     setIsSubmitting(true)
     try {
@@ -72,8 +90,15 @@ export function CreateEventModal({
         return
       }
 
+      if (coverFile && result.event) {
+        const fd = new FormData()
+        fd.append('file', coverFile)
+        await uploadEventCover(result.event.id, fd)
+      }
+
       toast.success('Event created successfully!')
       reset()
+      removeCover()
       onOpenChange(false)
       onSuccess()
     } catch {
@@ -85,7 +110,10 @@ export function CreateEventModal({
 
   function handleOpenChange(nextOpen: boolean) {
     if (!isSubmitting) {
-      if (!nextOpen) reset()
+      if (!nextOpen) {
+        reset()
+        removeCover()
+      }
       onOpenChange(nextOpen)
     }
   }
@@ -150,6 +178,57 @@ export function CreateEventModal({
                 {errors.event_date.message}
               </p>
             )}
+          </div>
+
+          {/* Cover Image */}
+          <div className="space-y-1.5">
+            <Label>
+              Cover Image{' '}
+              <span className="text-xs font-normal text-gray-400">(optional)</span>
+            </Label>
+            {coverPreview ? (
+              <div className="relative aspect-video w-full overflow-hidden rounded-lg border border-brand-border bg-gray-50">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={coverPreview}
+                  alt="Cover preview"
+                  className="h-full w-full object-cover"
+                />
+                <button
+                  type="button"
+                  onClick={removeCover}
+                  className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-black/50 text-white transition-colors hover:bg-black/70"
+                  aria-label="Remove cover image"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="absolute bottom-2 right-2 rounded bg-black/50 px-2 py-1 font-inter text-xs text-white transition-colors hover:bg-black/70"
+                >
+                  Change
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="flex w-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-brand-border bg-gray-50 px-4 py-6 text-center transition-colors hover:border-gold/50 hover:bg-amber-50/30"
+              >
+                <ImagePlus className="h-7 w-7 text-gray-300" />
+                <span className="font-inter text-xs text-gray-400">
+                  Click to add a cover image
+                </span>
+              </button>
+            )}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleCoverSelect}
+            />
           </div>
 
           <DialogFooter className="pt-2">

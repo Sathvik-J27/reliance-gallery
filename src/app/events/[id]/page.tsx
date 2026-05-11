@@ -61,7 +61,7 @@ export default async function EventPage({ params }: EventPageProps) {
         isAdmin={isAdmin}
       />
 
-      <EventGallery eventId={event.id} isAuthenticated={!!user} />
+      <EventGallery eventId={event.id} isAuthenticated={!!user} isAdmin={isAdmin} />
 
       {/* Mobile FAB — only shown to authenticated users */}
       {user && <UploadFAB eventId={event.id} />}

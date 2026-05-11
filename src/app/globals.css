@@ -65,6 +65,16 @@
   scrollbar-color: #C9A961 #f1f1f1;
 }
 
+/* ── Visitor mode — block all browser save mechanisms ── */
+.visitor-mode img,
+.visitor-mode video {
+  -webkit-touch-callout: none; /* iOS long-press "Save Image" */
+  pointer-events: none;
+}
+.visitor-mode .media-overlay {
+  pointer-events: all;
+}
+
 /* ── Utility layer additions ── */
 @layer utilities {
   .font-playfair {

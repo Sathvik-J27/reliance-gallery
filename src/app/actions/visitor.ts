@@ -21,10 +21,12 @@ export async function verifyVisitorCode(
     return { error: 'Incorrect code. Please try again.' }
   }
 
+  const { data: codeVersion } = await supabase.rpc('get_code_version')
+
   const cookieName = process.env.VISITOR_COOKIE_NAME ?? 'visitor_access'
   const cookieStore = await cookies()
 
-  cookieStore.set(cookieName, 'authenticated', {
+  cookieStore.set(cookieName, codeVersion ?? 'authenticated', {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',

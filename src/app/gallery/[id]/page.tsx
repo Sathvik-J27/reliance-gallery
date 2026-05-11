@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
+import { cookies } from 'next/headers'
 import { ArrowLeft, CalendarDays, Images } from 'lucide-react'
 import { getEventPublic, getEventUploadersPublic } from '@/app/actions/gallery'
 import { GalleryEventClient } from './GalleryEventClient'
@@ -27,6 +28,9 @@ function formatEventDate(dateStr: string): string {
 }
 
 export default async function GalleryEventPage({ params }: Props) {
+  const cookieStore = await cookies()
+  const visitorLabel = cookieStore.get('visitor_sid')?.value ?? 'guest'
+
   const [eventResult, uploadersResult] = await Promise.all([
     getEventPublic(params.id),
     getEventUploadersPublic(params.id),
@@ -87,7 +91,7 @@ export default async function GalleryEventPage({ params }: Props) {
       </div>
 
       {/* Gallery */}
-      <GalleryEventClient eventId={event.id} uploaders={uploaders} />
+      <GalleryEventClient eventId={event.id} uploaders={uploaders} visitorLabel={visitorLabel} />
     </main>
   )
 }

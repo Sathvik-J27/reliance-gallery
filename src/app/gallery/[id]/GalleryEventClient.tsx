@@ -9,9 +9,10 @@ import type { Profile } from '@/types/database'
 interface GalleryEventClientProps {
   eventId: string
   uploaders: Pick<Profile, 'id' | 'full_name' | 'email'>[]
+  visitorLabel: string
 }
 
-export function GalleryEventClient({ eventId, uploaders }: GalleryEventClientProps) {
+export function GalleryEventClient({ eventId, uploaders, visitorLabel }: GalleryEventClientProps) {
   const [fileType, setFileType] = useState<'image' | 'video' | undefined>()
   const [uploaderId, setUploaderId] = useState<string | undefined>()
   const [dateFrom, setDateFrom] = useState<string | undefined>()
@@ -32,7 +33,7 @@ export function GalleryEventClient({ eventId, uploaders }: GalleryEventClientPro
   }
 
   return (
-    <>
+    <div className="visitor-mode">
       {uploaders.length > 0 && (
         <div className="mb-5">
           <FilterBar
@@ -51,7 +52,7 @@ export function GalleryEventClient({ eventId, uploaders }: GalleryEventClientPro
         </div>
       )}
 
-      <VisitorMediaGrid eventId={eventId} filters={filters} />
-    </>
+      <VisitorMediaGrid eventId={eventId} filters={filters} visitorLabel={visitorLabel} />
+    </div>
   )
 }

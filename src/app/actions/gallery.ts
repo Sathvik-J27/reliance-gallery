@@ -7,18 +7,23 @@ import type { Media, Profile, Event } from '@/types/database'
 export type MediaWithUploader = Media & {
   uploader: Pick<Profile, 'id' | 'full_name' | 'email'> | null
   thumbnail_url?: string | null
+  signed_url?: string | null
 }
 
 export type EventWithCount = Event & { media_count: number }
 
 // ---------------------------------------------------------------------------
-// assertVisitorAccess — throws if visitor cookie is missing/invalid
+// assertVisitorAccess — throws if visitor cookie is missing or version-stale
 // ---------------------------------------------------------------------------
 async function assertVisitorAccess() {
   const cookieStore = await cookies()
   const cookieName = process.env.VISITOR_COOKIE_NAME ?? 'visitor_access'
   const val = cookieStore.get(cookieName)?.value
-  if (val !== 'authenticated') {
+  if (!val) throw new Error('Visitor access required.')
+
+  const supabase = createServiceClient()
+  const { data: currentVersion } = await supabase.rpc('get_code_version')
+  if (currentVersion && val !== currentVersion) {
     throw new Error('Visitor access required.')
   }
 }
@@ -98,12 +103,26 @@ export async function getEventMediaPagePublic(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let query: any = supabase
     .from('media')
-    .select('*, uploader:profiles!uploader_id(id, full_name, email)')
+    .select(`
+      id, event_id, storage_path, thumbnail_path,
+      file_type, mime_type, file_size_bytes,
+      width, height, duration_seconds, original_filename,
+      created_at, processing_status,
+      uploader:profiles!uploader_id(id, full_name, email)
+    `)
     .eq('event_id', eventId)
     .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
     .limit(PAGE_SIZE)
 
-  if (params.cursor) query = query.lt('created_at', params.cursor)
+  if (params.cursor) {
+    const sep = params.cursor.lastIndexOf('___')
+    const cursorAt = params.cursor.slice(0, sep)
+    const cursorId = params.cursor.slice(sep + 3)
+    query = query.or(
+      `created_at.lt.${cursorAt},and(created_at.eq.${cursorAt},id.lt.${cursorId})`
+    )
+  }
   if (params.fileType) query = query.eq('file_type', params.fileType)
   if (params.uploaderId) query = query.eq('uploader_id', params.uploaderId)
   if (params.dateFrom) {
@@ -120,29 +139,36 @@ export async function getEventMediaPagePublic(
   if (error) return { media: [], nextCursor: null, error: error.message }
 
   const items = (data ?? []) as MediaWithUploader[]
+  const lastItem = items.length > 0 ? items[items.length - 1] : null
   const nextCursor =
-    items.length === PAGE_SIZE ? items[items.length - 1].created_at : null
+    items.length === PAGE_SIZE && lastItem
+      ? `${lastItem.created_at}___${lastItem.id}`
+      : null
+
+  // Only pre-sign items that have no thumbnail — they need the signed URL for
+  // grid display. Items with thumbnails use a public thumbnail URL in the grid
+  // and the Lightbox signs on-demand via getSignedUrlPublic.
+  const pathsToSign = items
+    .filter((i) => !i.thumbnail_path && i.storage_path)
+    .map((i) => i.storage_path)
+  let signedUrlMap: Record<string, string> = {}
+  if (pathsToSign.length > 0) {
+    const { data: signed } = await supabase.storage
+      .from('event-media')
+      .createSignedUrls(pathsToSign, 15 * 60)
+    for (const s of signed ?? []) {
+      if (s.signedUrl && s.path) signedUrlMap[s.path] = s.signedUrl
+    }
+  }
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-  const media = await Promise.all(
-    items.map(async (item) => {
-      if (item.thumbnail_path) {
-        return {
-          ...item,
-          thumbnail_url: `${supabaseUrl}/storage/v1/object/public/event-thumbnails/${item.thumbnail_path}`,
-        }
-      }
-      if (item.file_type === 'image') {
-        const { data: signed } = await supabase.storage
-          .from('event-media')
-          .createSignedUrl(item.storage_path, 7200, {
-            transform: { width: 600, quality: 80 },
-          })
-        return { ...item, thumbnail_url: signed?.signedUrl ?? null }
-      }
-      return { ...item, thumbnail_url: null }
-    })
-  )
+  const media = items.map((item) => ({
+    ...item,
+    thumbnail_url: item.thumbnail_path
+      ? `${supabaseUrl}/storage/v1/object/public/event-thumbnails/${item.thumbnail_path}`
+      : null,
+    signed_url: signedUrlMap[item.storage_path] ?? null,
+  }))
 
   return { media, nextCursor }
 }
@@ -196,7 +222,7 @@ export async function getSignedUrlPublic(
 
   const { data, error } = await supabase.storage
     .from('event-media')
-    .createSignedUrl(storagePath, 60 * 60) // 1 hour
+    .createSignedUrl(storagePath, 15 * 60) // 15 minutes for visitors
 
   if (error) return { error: error.message }
   return { url: data.signedUrl }

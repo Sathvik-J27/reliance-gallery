@@ -1,5 +1,6 @@
 export type UserRole = 'admin' | 'staff'
 export type FileType = 'image' | 'video'
+export type ProcessingStatus = 'pending' | 'processing' | 'done' | 'failed'
 
 export interface Profile {
   id: string
@@ -33,6 +34,9 @@ export interface Media {
   duration_seconds: number | null
   original_filename: string | null
   created_at: string
+  processing_status: ProcessingStatus
+  processing_error: string | null
+  processing_attempts: number
 }
 
 export interface Favorite {

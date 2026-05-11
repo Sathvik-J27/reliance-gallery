@@ -25,6 +25,7 @@ export default function UploadPageClient({
     retryFile,
     clearCompleted,
     hasActiveUploads,
+    showBackgroundWarning,
   } = useUploadQueue()
 
   // Browser confirm dialog on navigate-away during active uploads
@@ -64,6 +65,13 @@ export default function UploadPageClient({
         <ArrowLeft className="h-4 w-4" />
         Back to {eventName}
       </Link>
+
+      {/* iOS background-tab warning banner */}
+      {showBackgroundWarning && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 font-inter font-medium">
+          Keep this tab open to continue uploading
+        </div>
+      )}
 
       {/* Large-file warning banner */}
       {largeFiles.length > 0 && (

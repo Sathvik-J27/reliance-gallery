@@ -1,4 +1,4 @@
-import { createClient } from '@/lib/supabase/server'
+import { createClient, getAuthUser } from '@/lib/supabase/server'
 import { getEvents } from '@/app/actions/events'
 import { EventGrid } from '@/components/dashboard/EventGrid'
 import type { Metadata } from 'next'
@@ -8,26 +8,19 @@ export const metadata: Metadata = {
 }
 
 export default async function DashboardPage() {
-  const supabase = await createClient()
+  // getAuthUser() is cached — one Auth call shared across the request
+  const user = await getAuthUser()
 
-  // Fetch current user and their profile in parallel
-  const [{ data: { user } }, eventsResult] = await Promise.all([
-    supabase.auth.getUser(),
+  const supabase = await createClient()
+  const [eventsResult, profileResult] = await Promise.all([
     getEvents(),
+    user
+      ? supabase.from('profiles').select('role').eq('id', user.id).single()
+      : Promise.resolve({ data: null }),
   ])
 
-  // Determine role
-  let isAdmin = false
-  if (user) {
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('role')
-      .eq('id', user.id)
-      .single()
-    isAdmin = profile?.role === 'admin'
-  }
-
   const events = eventsResult.events ?? []
+  const isAdmin = profileResult.data?.role === 'admin'
 
   return (
     <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8 sm:py-12">

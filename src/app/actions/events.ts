@@ -1,6 +1,7 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import type { Event } from '@/types/database'
 
 export type EventWithCount = Event & { media_count: number }
@@ -150,6 +151,77 @@ export async function updateEvent(
   }
 
   return {}
+}
+
+// ---------------------------------------------------------------------------
+// uploadEventCover — admin only; uses service role to bypass storage RLS
+// ---------------------------------------------------------------------------
+export async function uploadEventCover(
+  eventId: string,
+  formData: FormData
+): Promise<{ cover_image_url?: string; error?: string }> {
+  const supabase = await createClient()
+
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser()
+
+  if (authError || !user) {
+    return { error: 'You must be signed in.' }
+  }
+
+  const { data: profile, error: profileError } = await supabase
+    .from('profiles')
+    .select('role')
+    .eq('id', user.id)
+    .single()
+
+  if (profileError || !profile || profile.role !== 'admin') {
+    return { error: 'Only admins can upload event covers.' }
+  }
+
+  const file = formData.get('file') as File | null
+  if (!file) {
+    return { error: 'No file provided.' }
+  }
+
+  const serviceClient = createServiceClient()
+
+  // Create bucket if it doesn't exist yet (idempotent — ignore "already exists")
+  const { error: bucketError } = await serviceClient.storage.createBucket(
+    'event-thumbnails',
+    { public: true }
+  )
+  if (bucketError && !bucketError.message.toLowerCase().includes('already exists')) {
+    return { error: 'Storage setup failed: ' + bucketError.message }
+  }
+
+  const ext = file.name.split('.').pop() ?? 'jpg'
+  const path = `covers/${eventId}.${ext}`
+
+  const { error: uploadError } = await serviceClient.storage
+    .from('event-thumbnails')
+    .upload(path, file, { upsert: true })
+
+  if (uploadError) {
+    return { error: uploadError.message }
+  }
+
+  const { data: { publicUrl } } = serviceClient.storage
+    .from('event-thumbnails')
+    .getPublicUrl(path)
+
+  const { error: updateError } = await supabase
+    .from('events')
+    .update({ cover_image_url: publicUrl })
+    .eq('id', eventId)
+
+  if (updateError) {
+    return { error: updateError.message }
+  }
+
+  return { cover_image_url: publicUrl }
 }
 
 // ---------------------------------------------------------------------------

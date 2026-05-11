@@ -2,11 +2,14 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import * as tus from 'tus-js-client'
+import { toast } from 'sonner'
+import { useQueryClient } from '@tanstack/react-query'
 import { createClient } from '@/lib/supabase/client'
-import { createMediaRecord, getUploadPath } from '@/app/actions/media'
+import { createMediaRecord, getUploadPath, saveVideoThumbnail } from '@/app/actions/media'
+import { captureVideoThumbnail } from '@/lib/captureVideoThumbnail'
 
 const MAX_CONCURRENT = 3
-const TUS_THRESHOLD_BYTES = 6 * 1024 * 1024 // 6 MB
+const TUS_THRESHOLD_BYTES = 2 * 1024 * 1024 // 2 MB — use resumable TUS for anything ≥ 2 MB
 
 export interface UploadFile {
   id: string
@@ -28,6 +31,51 @@ export interface UploadQueueState {
   retryFile: (id: string, eventId: string) => void
   clearCompleted: () => void
   hasActiveUploads: boolean
+  showBackgroundWarning: boolean
+}
+
+// ---------------------------------------------------------------------------
+// HEIC/HEIF → JPEG conversion (dynamically imported to stay browser-only)
+// ---------------------------------------------------------------------------
+async function normalizeFile(file: File): Promise<File> {
+  const isHeic =
+    file.type === 'image/heic' ||
+    file.type === 'image/heif' ||
+    /\.(heic|heif)$/i.test(file.name)
+
+  if (!isHeic) return file
+
+  try {
+    const heic2any = (await import('heic2any')).default
+    const converted = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.9 })
+    const blob = Array.isArray(converted) ? converted[0] : converted
+    return new File(
+      [blob],
+      file.name.replace(/\.(heic|heif)$/i, '.jpg'),
+      { type: 'image/jpeg' }
+    )
+  } catch {
+    return file // fall back to original on conversion failure
+  }
+}
+
+async function captureAndUploadThumbnail(
+  file: File,
+  uploadId: string
+): Promise<string | null> {
+  const blob = await captureVideoThumbnail(file)
+  if (!blob) return null
+
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = reject
+    reader.readAsDataURL(blob)
+  })
+
+  const { path, error } = await saveVideoThumbnail(dataUrl, uploadId)
+  if (error || !path) return null
+  return path
 }
 
 function createUploadFile(file: File): UploadFile {
@@ -51,14 +99,25 @@ function formatFileType(mimeType: string): 'image' | 'video' {
 
 export function useUploadQueue(): UploadQueueState {
   const [files, setFiles] = useState<UploadFile[]>([])
+  const [showBackgroundWarning, setShowBackgroundWarning] = useState(false)
+  const queryClient = useQueryClient()
+
   // Map from file id -> active tus.Upload instance
   const tusUploads = useRef<Map<string, tus.Upload>>(new Map())
   // Map from file id -> upload start timestamp (ms)
   const startTimes = useRef<Map<string, number>>(new Map())
+  // WakeLock sentinel (Chrome Android; graceful no-op everywhere else)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const wakeLockRef = useRef<any>(null)
+  // Ref so visibilitychange handler can read current value without closure staleness
+  const hasActiveRef = useRef(false)
 
   const hasActiveUploads = files.some(
     (f) => f.status === 'uploading' || f.status === 'processing'
   )
+
+  // Keep ref in sync
+  useEffect(() => { hasActiveRef.current = hasActiveUploads }, [hasActiveUploads])
 
   // Warn on navigation if uploads are in progress
   useEffect(() => {
@@ -75,6 +134,47 @@ export function useUploadQueue(): UploadQueueState {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload)
   }, [hasActiveUploads])
 
+  // Acquire WakeLock while uploads are active; release when idle
+  useEffect(() => {
+    if (!hasActiveUploads) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      wakeLockRef.current?.release().catch(() => {})
+      wakeLockRef.current = null
+      return
+    }
+    if ('wakeLock' in navigator && !wakeLockRef.current) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(navigator as any).wakeLock.request('screen')
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .then((lock: any) => { wakeLockRef.current = lock })
+        .catch(() => {})
+    }
+  }, [hasActiveUploads])
+
+  // Visibility change: warn when hidden, toast + re-acquire WakeLock when visible
+  useEffect(() => {
+    const handle = () => {
+      if (document.hidden) {
+        if (hasActiveRef.current) setShowBackgroundWarning(true)
+      } else {
+        if (hasActiveRef.current) {
+          toast.info('Upload resumed — keep this tab open to finish uploading.')
+          // Re-acquire WakeLock (browser releases it automatically when hidden)
+          if ('wakeLock' in navigator) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            ;(navigator as any).wakeLock.request('screen')
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              .then((lock: any) => { wakeLockRef.current = lock })
+              .catch(() => {})
+          }
+        }
+        setShowBackgroundWarning(false)
+      }
+    }
+    document.addEventListener('visibilitychange', handle)
+    return () => document.removeEventListener('visibilitychange', handle)
+  }, [])
+
   const updateFile = useCallback(
     (id: string, patch: Partial<UploadFile>) => {
       setFiles((prev) =>
@@ -87,7 +187,14 @@ export function useUploadQueue(): UploadQueueState {
   // Core upload logic for a single file
   const startUpload = useCallback(
     async (fileEntry: UploadFile, eventId: string) => {
-      const { file, id } = fileEntry
+      const { id } = fileEntry
+
+      // Normalize HEIC/HEIF → JPEG before anything else (iOS Camera Roll)
+      const file = await normalizeFile(fileEntry.file)
+      // If the file was converted, update the stored size
+      if (file !== fileEntry.file) {
+        updateFile(id, { bytesTotal: file.size })
+      }
 
       // Get deterministic storage path from server
       const { path: storagePath, error: pathError } = await getUploadPath(
@@ -106,6 +213,10 @@ export function useUploadQueue(): UploadQueueState {
 
       updateFile(id, { status: 'uploading', storagePath })
       startTimes.current.set(id, Date.now())
+
+      // Adaptive chunk size: smaller chunks recover faster on cellular
+      const isMobile = /iPhone|iPad|Android/i.test(navigator.userAgent)
+      const chunkSize = isMobile ? 2 * 1024 * 1024 : 6 * 1024 * 1024
 
       // -----------------------------------------------------------------------
       // Large file: TUS resumable upload
@@ -139,7 +250,7 @@ export function useUploadQueue(): UploadQueueState {
             contentType: file.type,
             cacheControl: '3600',
           },
-          chunkSize: 6 * 1024 * 1024, // 6 MB chunks
+          chunkSize,
 
           onError(error) {
             tusUploads.current.delete(id)
@@ -179,6 +290,10 @@ export function useUploadQueue(): UploadQueueState {
               etaSeconds: null,
             })
 
+            const thumbnailPath = file.type.startsWith('video/')
+              ? await captureAndUploadThumbnail(file, id)
+              : undefined
+
             const { media, error: recordError } = await createMediaRecord({
               event_id: eventId,
               storage_path: storagePath,
@@ -186,6 +301,7 @@ export function useUploadQueue(): UploadQueueState {
               mime_type: file.type,
               file_size_bytes: file.size,
               original_filename: file.name,
+              ...(thumbnailPath != null && { thumbnail_path: thumbnailPath }),
             })
 
             if (recordError || !media) {
@@ -196,10 +312,9 @@ export function useUploadQueue(): UploadQueueState {
               return
             }
 
-            updateFile(id, {
-              status: 'done',
-              mediaId: media.id,
-            })
+            updateFile(id, { status: 'done', mediaId: media.id })
+            queryClient.invalidateQueries({ queryKey: ['gallery', eventId] })
+            queryClient.invalidateQueries({ queryKey: ['visitor-gallery', eventId] })
           },
         })
 
@@ -240,6 +355,10 @@ export function useUploadQueue(): UploadQueueState {
         etaSeconds: null,
       })
 
+      const thumbnailPath = file.type.startsWith('video/')
+        ? await captureAndUploadThumbnail(file, id)
+        : undefined
+
       const { media, error: recordError } = await createMediaRecord({
         event_id: eventId,
         storage_path: storagePath,
@@ -247,6 +366,7 @@ export function useUploadQueue(): UploadQueueState {
         mime_type: file.type,
         file_size_bytes: file.size,
         original_filename: file.name,
+        ...(thumbnailPath != null && { thumbnail_path: thumbnailPath }),
       })
 
       if (recordError || !media) {
@@ -257,12 +377,11 @@ export function useUploadQueue(): UploadQueueState {
         return
       }
 
-      updateFile(id, {
-        status: 'done',
-        mediaId: media.id,
-      })
+      updateFile(id, { status: 'done', mediaId: media.id })
+      queryClient.invalidateQueries({ queryKey: ['gallery', eventId] })
+      queryClient.invalidateQueries({ queryKey: ['visitor-gallery', eventId] })
     },
-    [updateFile]
+    [updateFile, queryClient]
   )
 
   // Process the queue: start up to MAX_CONCURRENT pending uploads
@@ -291,12 +410,12 @@ export function useUploadQueue(): UploadQueueState {
   const addFiles = useCallback(
     (newFiles: File[], eventId: string) => {
       const entries = newFiles.map(createUploadFile)
+      let latestFiles: UploadFile[] = []
       setFiles((prev) => {
-        const updated = [...prev, ...entries]
-        // Kick off queue processing after state update
-        setTimeout(() => processQueue(updated, eventId), 0)
-        return updated
+        latestFiles = [...prev, ...entries]
+        return latestFiles
       })
+      setTimeout(() => processQueue(latestFiles, eventId), 0)
     },
     [processQueue]
   )
@@ -314,6 +433,7 @@ export function useUploadQueue(): UploadQueueState {
 
   const retryFile = useCallback(
     (id: string, eventId: string) => {
+      let targetFile: UploadFile | undefined
       setFiles((prev) => {
         const updated = prev.map((f) =>
           f.id === id
@@ -329,12 +449,12 @@ export function useUploadQueue(): UploadQueueState {
               }
             : f
         )
-        setTimeout(() => {
-          const target = updated.find((f) => f.id === id)
-          if (target) startUpload(target, eventId)
-        }, 0)
+        targetFile = updated.find((f) => f.id === id)
         return updated
       })
+      setTimeout(() => {
+        if (targetFile) startUpload(targetFile, eventId)
+      }, 0)
     },
     [startUpload]
   )
@@ -350,5 +470,6 @@ export function useUploadQueue(): UploadQueueState {
     retryFile,
     clearCompleted,
     hasActiveUploads,
+    showBackgroundWarning,
   }
 }

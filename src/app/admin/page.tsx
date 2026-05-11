@@ -1,31 +1,30 @@
 import { redirect } from 'next/navigation'
-import { createClient } from '@/lib/supabase/server'
+import { createClient, getAuthUser } from '@/lib/supabase/server'
 import { getAllProfiles, getAdminStats } from '@/app/actions/admin'
 import { AdminPageClient } from '@/components/admin/AdminPageClient'
 import type { Metadata } from 'next'
+
+export const dynamic = 'force-dynamic'
 
 export const metadata: Metadata = {
   title: 'Admin — Reliance Surfaces',
 }
 
 export default async function AdminPage() {
-  const supabase = await createClient()
-
-  const { data: { user } } = await supabase.auth.getUser()
+  const user = await getAuthUser()
   if (!user) redirect('/login?redirectTo=/admin')
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('role')
-    .eq('id', user.id)
-    .single()
-
-  if (profile?.role !== 'admin') redirect('/dashboard')
-
-  const [profilesResult, statsResult] = await Promise.all([
+  // Run the role check alongside the data fetches — requireAdmin() inside each
+  // action reuses the cached getAuthUser() result, so only one Auth call happens
+  // for the entire page render.
+  const supabase = await createClient()
+  const [profileResult, profilesResult, statsResult] = await Promise.all([
+    supabase.from('profiles').select('role').eq('id', user.id).single(),
     getAllProfiles(),
     getAdminStats(),
   ])
+
+  if (profileResult.data?.role !== 'admin') redirect('/dashboard')
 
   return (
     <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8 sm:py-12">

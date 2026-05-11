@@ -15,5 +15,14 @@ export function useVisitorGalleryMedia(eventId: string, filters?: GalleryFilters
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     staleTime: 60_000,
+    refetchInterval: (query) => {
+      const hasPending = query.state.data?.pages
+        .flatMap((p) => p.media)
+        .some(
+          (m) => m.processing_status === 'pending' || m.processing_status === 'processing'
+        ) ?? false
+      return hasPending ? 15_000 : false
+    },
+    refetchIntervalInBackground: false,
   })
 }

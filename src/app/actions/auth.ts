@@ -50,7 +50,7 @@ export async function signIn(data: {
     return { error: error.message }
   }
 
-  redirect('/dashboard')
+  return {}
 }
 
 export async function signInWithMagicLink(
@@ -84,5 +84,4 @@ export async function updatePassword(
 export async function signOut(): Promise<void> {
   const supabase = await createClient()
   await supabase.auth.signOut()
-  redirect('/')
 }

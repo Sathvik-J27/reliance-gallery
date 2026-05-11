@@ -10,9 +10,10 @@ import type { GalleryFilters } from '@/hooks/useGalleryMedia'
 interface EventGalleryProps {
   eventId: string
   isAuthenticated: boolean
+  isAdmin?: boolean
 }
 
-export function EventGallery({ eventId, isAuthenticated }: EventGalleryProps) {
+export function EventGallery({ eventId, isAuthenticated, isAdmin = false }: EventGalleryProps) {
   const [filters, setFilters] = useState<GalleryFilters>({})
 
   const { data: uploadersData, isLoading: isLoadingUploaders } = useQuery({
@@ -38,7 +39,7 @@ export function EventGallery({ eventId, isAuthenticated }: EventGalleryProps) {
         onDateToChange={(val) => setFilters((f) => ({ ...f, dateTo: val }))}
         onClear={() => setFilters({})}
       />
-      <MediaGrid eventId={eventId} isAuthenticated={isAuthenticated} filters={filters} />
+      <MediaGrid eventId={eventId} isAuthenticated={isAuthenticated} isAdmin={isAdmin} filters={filters} />
     </div>
   )
 }

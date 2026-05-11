@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
+import { randomBytes } from 'crypto'
 import { createServiceClient } from '@/lib/supabase/service'
 
 export async function POST(request: NextRequest) {
@@ -53,11 +54,24 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Incorrect code. Please try again.' }, { status: 401 })
   }
 
+  // Fetch current code version to bake into the cookie — rotating the code will
+  // invalidate any cookie that holds an older version UUID.
+  const { data: codeVersion } = await supabase.rpc('get_code_version')
+
   // Set visitor cookie
   const cookieName = process.env.VISITOR_COOKIE_NAME ?? 'visitor_access'
   const cookieStore = await cookies()
 
-  cookieStore.set(cookieName, 'authenticated', {
+  cookieStore.set(cookieName, codeVersion ?? 'authenticated', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 86400,
+    path: '/',
+  })
+
+  // Unique per-session ID used to watermark screenshots
+  cookieStore.set('visitor_sid', randomBytes(4).toString('hex'), {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',

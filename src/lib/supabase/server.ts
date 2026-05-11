@@ -1,5 +1,15 @@
+import { cache } from 'react'
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
+
+// Deduplicates the Supabase Auth network call within a single render pass.
+// Multiple server components / server actions running in the same request
+// will all receive the same User without extra round-trips.
+export const getAuthUser = cache(async () => {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  return user
+})
 
 export async function createClient() {
   const cookieStore = await cookies()
