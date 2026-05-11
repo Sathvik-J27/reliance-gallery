@@ -278,7 +278,7 @@ export async function getEventMediaPage(
   const pathsToSign = items
     .filter((i) => !i.thumbnail_path && i.storage_path)
     .map((i) => i.storage_path)
-  let signedUrlMap: Record<string, string> = {}
+  const signedUrlMap: Record<string, string> = {}
   if (pathsToSign.length > 0) {
     const { data: signed } = await supabase.storage
       .from('event-media')
