@@ -1,22 +1,23 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
-import { createServiceClient } from '@/lib/supabase/service'
+import { r2ThumbnailUrl, r2DisplayUrl } from '@/lib/r2'
 import type { Media, Profile } from '@/types/database'
 
 export type MediaWithUploader = Media & {
   uploader: Pick<Profile, 'id' | 'full_name' | 'email'> | null
-  thumbnail_url?: string | null
-  signed_url?: string | null
+  thumbnail_url?: string | null  // CDN URL for thumbnail (grid display)
+  cdn_url?: string | null        // CDN URL for display-quality image/video (lightbox)
 }
 
 // ---------------------------------------------------------------------------
-// createMediaRecord — insert after a successful upload
+// createMediaRecord — insert after a successful direct R2 upload.
+// Also enqueues a processing job so the Railway worker generates the
+// thumbnail and display-quality versions.
 // ---------------------------------------------------------------------------
 export async function createMediaRecord(data: {
   event_id: string
-  storage_path: string
-  thumbnail_path?: string
+  storage_path: string   // R2 key: originals/{eventId}/{uuid}.{ext}
   file_type: 'image' | 'video'
   mime_type: string
   file_size_bytes: number
@@ -43,7 +44,8 @@ export async function createMediaRecord(data: {
         event_id: data.event_id,
         uploader_id: user.id,
         storage_path: data.storage_path,
-        thumbnail_path: data.thumbnail_path ?? null,
+        thumbnail_path: null,
+        display_path: null,
         file_type: data.file_type,
         mime_type: data.mime_type,
         file_size_bytes: data.file_size_bytes,
@@ -56,7 +58,7 @@ export async function createMediaRecord(data: {
       { onConflict: 'storage_path', ignoreDuplicates: false }
     )
     .select(
-      'id, event_id, storage_path, thumbnail_path, file_type, mime_type, ' +
+      'id, event_id, storage_path, thumbnail_path, display_path, file_type, mime_type, ' +
       'file_size_bytes, width, height, duration_seconds, original_filename, ' +
       'created_at, processing_status, processing_error, processing_attempts'
     )
@@ -66,11 +68,19 @@ export async function createMediaRecord(data: {
     return { error: error.message }
   }
 
+  // Enqueue processing job — Railway worker picks this up within 5 s
+  await supabase
+    .from('processing_queue')
+    .upsert(
+      { media_id: (media as unknown as Media).id, status: 'queued' },
+      { onConflict: 'media_id', ignoreDuplicates: true }
+    )
+
   return { media: media as unknown as Media }
 }
 
 // ---------------------------------------------------------------------------
-// getEventMedia — paginated (30 per page), with uploader profile
+// getEventMedia — offset-based (legacy, kept for admin pages)
 // ---------------------------------------------------------------------------
 export async function getEventMedia(
   eventId: string,
@@ -101,7 +111,7 @@ export async function getEventMedia(
 }
 
 // ---------------------------------------------------------------------------
-// deleteMedia — remove a media record (and optionally the storage object)
+// deleteMedia — remove a media record (uploader or admin)
 // ---------------------------------------------------------------------------
 export async function deleteMedia(
   id: string
@@ -117,7 +127,6 @@ export async function deleteMedia(
     return { error: 'You must be signed in to delete media.' }
   }
 
-  // Fetch the record first so we know the uploader
   const { data: existing, error: fetchError } = await supabase
     .from('media')
     .select('id, uploader_id, storage_path, thumbnail_path')
@@ -128,7 +137,6 @@ export async function deleteMedia(
     return { error: 'Media item not found.' }
   }
 
-  // Check role — admin can delete anything; staff can only delete their own
   const { data: profile } = await supabase
     .from('profiles')
     .select('role')
@@ -149,34 +157,6 @@ export async function deleteMedia(
   }
 
   return {}
-}
-
-// ---------------------------------------------------------------------------
-// getSignedUrl — 1-hour signed download URL for a private storage object.
-// Falls back to the service role client for visitors who have no Supabase
-// session but hold a valid visitor_access cookie (middleware-verified).
-// ---------------------------------------------------------------------------
-export async function getSignedUrl(
-  storagePath: string
-): Promise<{ url?: string; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  // Authenticated staff/admin use the regular client; visitors use service role.
-  const storageClient = user
-    ? supabase.storage
-    : createServiceClient().storage
-
-  const ttl = user ? 60 * 60 : 15 * 60 // 1 hour for staff; 15 min for visitors
-  const { data, error } = await storageClient
-    .from('event-media')
-    .createSignedUrl(storagePath, ttl)
-
-  if (error) {
-    return { error: error.message }
-  }
-
-  return { url: data.signedUrl }
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +188,9 @@ export async function getEventUploaders(
 }
 
 // ---------------------------------------------------------------------------
-// getEventMediaPage — cursor-based paginated query for infinite scroll
+// getEventMediaPage — cursor-based paginated query for infinite scroll.
+// All image/video URLs are served from Cloudflare R2 CDN — no signed URLs,
+// no Supabase storage egress.
 // ---------------------------------------------------------------------------
 export async function getEventMediaPage(
   eventId: string,
@@ -231,7 +213,7 @@ export async function getEventMediaPage(
   let query: any = supabase
     .from('media')
     .select(`
-      id, event_id, storage_path, thumbnail_path,
+      id, event_id, storage_path, thumbnail_path, display_path,
       file_type, mime_type, file_size_bytes,
       width, height, duration_seconds, original_filename,
       created_at, processing_status,
@@ -272,29 +254,10 @@ export async function getEventMediaPage(
       ? `${lastItem.created_at}___${lastItem.id}`
       : null
 
-  // Only pre-sign items that have no thumbnail — they need the signed URL for
-  // grid display. Items with thumbnails use a public thumbnail URL in the grid
-  // and the Lightbox signs on-demand via getSignedUrl.
-  const pathsToSign = items
-    .filter((i) => !i.thumbnail_path && i.storage_path)
-    .map((i) => i.storage_path)
-  const signedUrlMap: Record<string, string> = {}
-  if (pathsToSign.length > 0) {
-    const { data: signed } = await supabase.storage
-      .from('event-media')
-      .createSignedUrls(pathsToSign, 60 * 60)
-    for (const s of signed ?? []) {
-      if (s.signedUrl && s.path) signedUrlMap[s.path] = s.signedUrl
-    }
-  }
-
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
   const media = items.map((item) => ({
     ...item,
-    thumbnail_url: item.thumbnail_path
-      ? `${supabaseUrl}/storage/v1/object/public/event-thumbnails/${item.thumbnail_path}`
-      : null,
-    signed_url: signedUrlMap[item.storage_path] ?? null,
+    thumbnail_url: item.thumbnail_path ? r2ThumbnailUrl(item.thumbnail_path) : null,
+    cdn_url: item.display_path ? r2DisplayUrl(item.display_path) : null,
   }))
 
   return { media, nextCursor }
@@ -333,60 +296,4 @@ export async function deleteMediaBatch(
 
   if (error) return { deleted: 0, error: error.message }
   return { deleted: ids.length }
-}
-
-// ---------------------------------------------------------------------------
-// saveVideoThumbnail — upload a client-captured video poster frame using the
-// service role so that storage RLS on event-thumbnails doesn't block it.
-// ---------------------------------------------------------------------------
-export async function saveVideoThumbnail(
-  base64DataUrl: string,
-  uploadId: string
-): Promise<{ path?: string; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user }, error: authError } = await supabase.auth.getUser()
-  if (authError || !user) return { error: 'Not authenticated.' }
-
-  const base64 = base64DataUrl.split(',')[1]
-  if (!base64) return { error: 'Invalid thumbnail data.' }
-
-  const buffer = Buffer.from(base64, 'base64')
-  const thumbPath = `thumbnails/${uploadId}-poster.jpg`
-
-  const serviceClient = createServiceClient()
-  const { error } = await serviceClient.storage
-    .from('event-thumbnails')
-    .upload(thumbPath, buffer, { contentType: 'image/jpeg', upsert: true })
-
-  if (error) return { error: error.message }
-  return { path: thumbPath }
-}
-
-// ---------------------------------------------------------------------------
-// getUploadPath — generate a storage path for a new upload
-// The client uses this path to construct the TUS upload request.
-// ---------------------------------------------------------------------------
-export async function getUploadPath(
-  eventId: string,
-  filename: string,
-  mimeType: string
-): Promise<{ path?: string; error?: string }> {
-  const supabase = await createClient()
-
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError || !user) {
-    return { error: 'You must be signed in to upload.' }
-  }
-
-  void mimeType // passed through to TUS metadata by the client
-  const ext = filename.split('.').pop()
-  const path = `events/${eventId}/${Date.now()}-${Math.random()
-    .toString(36)
-    .slice(2)}.${ext}`
-
-  return { path }
 }

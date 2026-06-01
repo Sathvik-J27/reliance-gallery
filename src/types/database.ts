@@ -24,8 +24,9 @@ export interface Media {
   id: string
   event_id: string
   uploader_id: string | null
-  storage_path: string
-  thumbnail_path: string | null
+  storage_path: string          // R2 key: originals/{eventId}/{uuid}.{ext}
+  thumbnail_path: string | null // R2 key: thumbnails/{eventId}/{mediaId}.jpg
+  display_path: string | null   // R2 key: display/{eventId}/{mediaId}.jpg|mp4
   file_type: FileType | null
   mime_type: string | null
   file_size_bytes: number | null

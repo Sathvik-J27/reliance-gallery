@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { X, ChevronLeft, ChevronRight, Download, Star, Volume2, VolumeX } from 'lucide-react'
-import { getSignedUrl } from '@/app/actions/media'
 import type { MediaWithUploader } from '@/app/actions/media'
 import { VisitorWatermark } from './VisitorWatermark'
 import { cn } from '@/lib/utils'
@@ -54,8 +53,6 @@ export function Lightbox({
   onReachEnd,
 }: LightboxProps) {
   const [idx, setIdx] = useState(initialIndex)
-  const [currentUrl, setCurrentUrl] = useState<string | null>(null)
-  const [isLoadingUrl, setIsLoadingUrl] = useState(false)
   const [fullLoaded, setFullLoaded] = useState(false)
   const [zoom, setZoom] = useState({ scale: 1, x: 0, y: 0 })
   const [showMeta, setShowMeta] = useState(true)
@@ -63,7 +60,6 @@ export function Lightbox({
 
   const containerRef = useRef<HTMLDivElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
-  const urlCache = useRef(new Map<string, string>())
   const zoomRef = useRef(zoom)
   const touchState = useRef({
     startX: 0,
@@ -76,35 +72,10 @@ export function Lightbox({
   })
 
   const item = media[idx]
+  const currentUrl = item?.cdn_url ?? null
 
   // Keep zoomRef in sync for native touch handlers
   useEffect(() => { zoomRef.current = zoom }, [zoom])
-
-  const fetchUrl = useCallback(async (m: MediaWithUploader) => {
-    if (urlCache.current.has(m.id)) return urlCache.current.get(m.id)!
-    // Use the pre-signed URL from the server action if available (no round-trip).
-    const preSignedUrl = m.signed_url ?? null
-    if (preSignedUrl) {
-      urlCache.current.set(m.id, preSignedUrl)
-      return preSignedUrl
-    }
-    const { url } = await getSignedUrl(m.storage_path)
-    if (url) urlCache.current.set(m.id, url)
-    return url ?? null
-  }, [])
-
-  // Load URL for current item and prefetch neighbors
-  useEffect(() => {
-    if (!item) return
-    setIsLoadingUrl(true)
-    setCurrentUrl(null)
-    fetchUrl(item).then((url) => {
-      setCurrentUrl(url)
-      setIsLoadingUrl(false)
-    })
-    if (media[idx - 1]) fetchUrl(media[idx - 1])
-    if (media[idx + 1]) fetchUrl(media[idx + 1])
-  }, [idx, item, fetchUrl, media])
 
   // Reset zoom, mute, and fullLoaded on navigation
   useEffect(() => {
@@ -224,11 +195,10 @@ export function Lightbox({
     setIsMuted(next)
   }
 
-  const handleDownload = async () => {
-    const url = currentUrl ?? await fetchUrl(item)
-    if (!url) return
+  const handleDownload = () => {
+    if (!currentUrl) return
     const a = document.createElement('a')
-    a.href = url
+    a.href = currentUrl
     a.download = item.original_filename ?? 'download'
     a.click()
   }
@@ -369,9 +339,7 @@ export function Lightbox({
             className="relative flex items-center justify-center w-full h-full"
             onClick={(e) => e.stopPropagation()}
           >
-            {isLoadingUrl ? (
-              <div className="w-[min(90vw,800px)] aspect-video bg-white/5 animate-pulse rounded" />
-            ) : currentUrl ? (
+            {currentUrl ? (
               <>
                 <video
                   ref={videoRef}

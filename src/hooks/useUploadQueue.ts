@@ -1,15 +1,17 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback } from 'react'
-import * as tus from 'tus-js-client'
 import { toast } from 'sonner'
 import { useQueryClient } from '@tanstack/react-query'
-import { createClient } from '@/lib/supabase/client'
-import { createMediaRecord, getUploadPath, saveVideoThumbnail } from '@/app/actions/media'
-import { captureVideoThumbnail } from '@/lib/captureVideoThumbnail'
+import { createMediaRecord } from '@/app/actions/media'
+import {
+  initiateMultipartUpload,
+  completeMultipartUpload,
+  abortMultipartUpload,
+} from '@/app/actions/upload'
 
 const MAX_CONCURRENT = 3
-const TUS_THRESHOLD_BYTES = 2 * 1024 * 1024 // 2 MB — use resumable TUS for anything ≥ 2 MB
+const PART_SIZE = 8 * 1024 * 1024 // 8 MB — must match upload.ts
 
 export interface UploadFile {
   id: string
@@ -55,27 +57,8 @@ async function normalizeFile(file: File): Promise<File> {
       { type: 'image/jpeg' }
     )
   } catch {
-    return file // fall back to original on conversion failure
+    return file
   }
-}
-
-async function captureAndUploadThumbnail(
-  file: File,
-  uploadId: string
-): Promise<string | null> {
-  const blob = await captureVideoThumbnail(file)
-  if (!blob) return null
-
-  const dataUrl = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result as string)
-    reader.onerror = reject
-    reader.readAsDataURL(blob)
-  })
-
-  const { path, error } = await saveVideoThumbnail(dataUrl, uploadId)
-  if (error || !path) return null
-  return path
 }
 
 function createUploadFile(file: File): UploadFile {
@@ -97,47 +80,76 @@ function formatFileType(mimeType: string): 'image' | 'video' {
   return mimeType.startsWith('video/') ? 'video' : 'image'
 }
 
+// Upload a single part via XHR so we get real per-part progress.
+function uploadPart(
+  url: string,
+  data: Blob,
+  onProgress: (loaded: number, total: number) => void,
+  signal: AbortSignal
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable) onProgress(e.loaded, e.total)
+    })
+
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        // R2 returns the ETag in the response header; strip surrounding quotes
+        const etag = xhr.getResponseHeader('ETag')?.replace(/"/g, '') ?? ''
+        resolve(etag)
+      } else {
+        reject(new Error(`Part upload failed: HTTP ${xhr.status}`))
+      }
+    })
+
+    xhr.addEventListener('error', () => reject(new Error('Network error during part upload.')))
+    xhr.addEventListener('abort', () => reject(new DOMException('Upload aborted.', 'AbortError')))
+
+    signal.addEventListener('abort', () => xhr.abort())
+
+    xhr.open('PUT', url)
+    xhr.send(data)
+  })
+}
+
 export function useUploadQueue(): UploadQueueState {
   const [files, setFiles] = useState<UploadFile[]>([])
   const [showBackgroundWarning, setShowBackgroundWarning] = useState(false)
   const queryClient = useQueryClient()
 
-  // Map from file id -> active tus.Upload instance
-  const tusUploads = useRef<Map<string, tus.Upload>>(new Map())
-  // Map from file id -> upload start timestamp (ms)
+  // Map from file id → AbortController (cancels in-flight XHR requests)
+  const abortControllers = useRef<Map<string, AbortController>>(new Map())
+  // Map from file id → { key, uploadId } for calling abortMultipartUpload on cancel
+  const activeUploads = useRef<Map<string, { key: string; uploadId: string }>>(new Map())
+  // Map from file id → upload start timestamp (ms)
   const startTimes = useRef<Map<string, number>>(new Map())
-  // WakeLock sentinel (Chrome Android; graceful no-op everywhere else)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const wakeLockRef = useRef<any>(null)
-  // Ref so visibilitychange handler can read current value without closure staleness
   const hasActiveRef = useRef(false)
 
   const hasActiveUploads = files.some(
     (f) => f.status === 'uploading' || f.status === 'processing'
   )
 
-  // Keep ref in sync
   useEffect(() => { hasActiveRef.current = hasActiveUploads }, [hasActiveUploads])
 
   // Warn on navigation if uploads are in progress
   useEffect(() => {
     if (!hasActiveUploads) return
-
     function handleBeforeUnload(e: BeforeUnloadEvent) {
       e.preventDefault()
-      e.returnValue =
-        'Uploads are still in progress. Are you sure you want to leave?'
+      e.returnValue = 'Uploads are still in progress. Are you sure you want to leave?'
       return e.returnValue
     }
-
     window.addEventListener('beforeunload', handleBeforeUnload)
     return () => window.removeEventListener('beforeunload', handleBeforeUnload)
   }, [hasActiveUploads])
 
-  // Acquire WakeLock while uploads are active; release when idle
+  // Acquire WakeLock while uploads are active
   useEffect(() => {
     if (!hasActiveUploads) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       wakeLockRef.current?.release().catch(() => {})
       wakeLockRef.current = null
       return
@@ -151,7 +163,7 @@ export function useUploadQueue(): UploadQueueState {
     }
   }, [hasActiveUploads])
 
-  // Visibility change: warn when hidden, toast + re-acquire WakeLock when visible
+  // Visibility change: warn when hidden, re-acquire WakeLock when visible
   useEffect(() => {
     const handle = () => {
       if (document.hidden) {
@@ -159,7 +171,6 @@ export function useUploadQueue(): UploadQueueState {
       } else {
         if (hasActiveRef.current) {
           toast.info('Upload resumed — keep this tab open to finish uploading.')
-          // Re-acquire WakeLock (browser releases it automatically when hidden)
           if ('wakeLock' in navigator) {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             ;(navigator as any).wakeLock.request('screen')
@@ -177,177 +188,123 @@ export function useUploadQueue(): UploadQueueState {
 
   const updateFile = useCallback(
     (id: string, patch: Partial<UploadFile>) => {
-      setFiles((prev) =>
-        prev.map((f) => (f.id === id ? { ...f, ...patch } : f))
-      )
+      setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, ...patch } : f)))
     },
     []
   )
 
-  // Core upload logic for a single file
+  // Core upload logic for a single file — R2 S3 multipart
   const startUpload = useCallback(
     async (fileEntry: UploadFile, eventId: string) => {
       const { id } = fileEntry
 
-      // Normalize HEIC/HEIF → JPEG before anything else (iOS Camera Roll)
       const file = await normalizeFile(fileEntry.file)
-      // If the file was converted, update the stored size
       if (file !== fileEntry.file) {
         updateFile(id, { bytesTotal: file.size })
       }
 
-      // Get deterministic storage path from server
-      const { path: storagePath, error: pathError } = await getUploadPath(
-        eventId,
-        file.name,
-        file.type
-      )
+      updateFile(id, { status: 'uploading' })
+      startTimes.current.set(id, Date.now())
 
-      if (pathError || !storagePath) {
+      // 1. Request presigned part URLs from the server
+      const { key, uploadId, partUrls, error: initError } =
+        await initiateMultipartUpload(eventId, file.name, file.type, file.size)
+
+      if (initError || !key || !uploadId || !partUrls) {
         updateFile(id, {
           status: 'error',
-          errorMessage: pathError ?? 'Failed to generate upload path.',
+          errorMessage: initError ?? 'Failed to initiate upload.',
         })
+        startTimes.current.delete(id)
         return
       }
 
-      updateFile(id, { status: 'uploading', storagePath })
-      startTimes.current.set(id, Date.now())
+      updateFile(id, { storagePath: key })
+      activeUploads.current.set(id, { key, uploadId })
 
-      // Adaptive chunk size: smaller chunks recover faster on cellular
-      const isMobile = /iPhone|iPad|Android/i.test(navigator.userAgent)
-      const chunkSize = isMobile ? 2 * 1024 * 1024 : 6 * 1024 * 1024
+      const controller = new AbortController()
+      abortControllers.current.set(id, controller)
 
-      // -----------------------------------------------------------------------
-      // Large file: TUS resumable upload
-      // -----------------------------------------------------------------------
-      if (file.size > TUS_THRESHOLD_BYTES) {
-        const supabase = createClient()
-        const {
-          data: { session },
-        } = await supabase.auth.getSession()
+      // Bytes uploaded across all completed parts
+      let committedBytes = 0
+      // Per-part in-flight progress
+      const partProgress: number[] = new Array(partUrls.length).fill(0)
 
-        if (!session) {
-          updateFile(id, {
-            status: 'error',
-            errorMessage: 'Not authenticated.',
-          })
+      const onPartProgress = (partIndex: number, loaded: number) => {
+        partProgress[partIndex] = loaded
+        const totalLoaded = committedBytes + partProgress.reduce((a, b) => a + b, 0)
+        const startTime = startTimes.current.get(id)
+        let etaSeconds: number | null = null
+        if (startTime && totalLoaded > 0) {
+          const elapsedSec = (Date.now() - startTime) / 1000
+          const rate = totalLoaded / elapsedSec
+          etaSeconds = rate > 0 ? (file.size - totalLoaded) / rate : null
+        }
+        updateFile(id, {
+          progress: Math.round((totalLoaded / file.size) * 100),
+          bytesUploaded: totalLoaded,
+          etaSeconds: etaSeconds !== null ? Math.round(etaSeconds) : null,
+        })
+      }
+
+      // 2. Upload parts sequentially (avoids saturating mobile connections)
+      const completedParts: { PartNumber: number; ETag: string }[] = []
+      try {
+        for (let i = 0; i < partUrls.length; i++) {
+          const start = i * PART_SIZE
+          const end = Math.min(start + PART_SIZE, file.size)
+          const chunk = file.slice(start, end)
+
+          const etag = await uploadPart(
+            partUrls[i],
+            chunk,
+            (loaded) => onPartProgress(i, loaded),
+            controller.signal
+          )
+
+          // Once committed, roll loaded bytes into committedBytes
+          committedBytes += end - start
+          partProgress[i] = 0
+          completedParts.push({ PartNumber: i + 1, ETag: etag })
+        }
+      } catch (err) {
+        abortControllers.current.delete(id)
+        startTimes.current.delete(id)
+
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          // User cancelled — server-side cleanup handled by removeFile
           return
         }
 
-        const upload = new tus.Upload(file, {
-          endpoint: `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/upload/resumable`,
-          retryDelays: [0, 3000, 5000, 10000, 20000],
-          headers: {
-            authorization: `Bearer ${session.access_token}`,
-            'x-upsert': 'false',
-          },
-          uploadDataDuringCreation: true,
-          removeFingerprintOnSuccess: true,
-          metadata: {
-            bucketName: 'event-media',
-            objectName: storagePath,
-            contentType: file.type,
-            cacheControl: '3600',
-          },
-          chunkSize,
+        // Network / HTTP error — abort the multipart upload so R2 doesn't
+        // keep orphaned parts
+        await abortMultipartUpload(key, uploadId).catch(() => {})
+        activeUploads.current.delete(id)
 
-          onError(error) {
-            tusUploads.current.delete(id)
-            startTimes.current.delete(id)
-            updateFile(id, {
-              status: 'error',
-              errorMessage: error.message ?? 'Upload failed.',
-            })
-          },
-
-          onProgress(bytesUploaded, bytesTotal) {
-            const startTime = startTimes.current.get(id)
-            let etaSeconds: number | null = null
-            if (startTime && bytesUploaded > 0) {
-              const elapsedSec = (Date.now() - startTime) / 1000
-              const rate = bytesUploaded / elapsedSec
-              etaSeconds = rate > 0 ? (bytesTotal - bytesUploaded) / rate : null
-            }
-            const progress = bytesTotal > 0 ? Math.round((bytesUploaded / bytesTotal) * 100) : 0
-            updateFile(id, {
-              progress,
-              bytesUploaded,
-              bytesTotal,
-              etaSeconds: etaSeconds !== null ? Math.round(etaSeconds) : null,
-            })
-          },
-
-          async onSuccess() {
-            tusUploads.current.delete(id)
-            startTimes.current.delete(id)
-
-            // Mark as processing while we create the DB record
-            updateFile(id, {
-              progress: 100,
-              bytesUploaded: file.size,
-              status: 'processing',
-              etaSeconds: null,
-            })
-
-            const thumbnailPath = file.type.startsWith('video/')
-              ? await captureAndUploadThumbnail(file, id)
-              : undefined
-
-            const { media, error: recordError } = await createMediaRecord({
-              event_id: eventId,
-              storage_path: storagePath,
-              file_type: formatFileType(file.type),
-              mime_type: file.type,
-              file_size_bytes: file.size,
-              original_filename: file.name,
-              ...(thumbnailPath != null && { thumbnail_path: thumbnailPath }),
-            })
-
-            if (recordError || !media) {
-              updateFile(id, {
-                status: 'error',
-                errorMessage: recordError ?? 'Failed to save media record.',
-              })
-              return
-            }
-
-            updateFile(id, { status: 'done', mediaId: media.id })
-            queryClient.invalidateQueries({ queryKey: ['gallery', eventId] })
-            queryClient.invalidateQueries({ queryKey: ['visitor-gallery', eventId] })
-          },
-        })
-
-        tusUploads.current.set(id, upload)
-        upload.start()
-        return
-      }
-
-      // -----------------------------------------------------------------------
-      // Small file: regular Supabase Storage upload
-      // -----------------------------------------------------------------------
-      const supabase = createClient()
-
-      updateFile(id, { bytesUploaded: 0, bytesTotal: file.size })
-
-      const { error: uploadError } = await supabase.storage
-        .from('event-media')
-        .upload(storagePath, file, {
-          cacheControl: '3600',
-          upsert: false,
-          contentType: file.type,
-        })
-
-      if (uploadError) {
-        startTimes.current.delete(id)
         updateFile(id, {
           status: 'error',
-          errorMessage: uploadError.message,
+          errorMessage: (err as Error).message ?? 'Upload failed.',
         })
         return
       }
 
-      startTimes.current.delete(id)
+      abortControllers.current.delete(id)
+      activeUploads.current.delete(id)
+
+      // 3. Finalize the multipart upload
+      const { error: completeError } = await completeMultipartUpload(
+        key,
+        uploadId,
+        completedParts
+      )
+
+      if (completeError) {
+        startTimes.current.delete(id)
+        updateFile(id, { status: 'error', errorMessage: completeError })
+        return
+      }
+
+      // 4. Create the DB record and enqueue processing job
       updateFile(id, {
         progress: 100,
         bytesUploaded: file.size,
@@ -355,19 +312,16 @@ export function useUploadQueue(): UploadQueueState {
         etaSeconds: null,
       })
 
-      const thumbnailPath = file.type.startsWith('video/')
-        ? await captureAndUploadThumbnail(file, id)
-        : undefined
-
       const { media, error: recordError } = await createMediaRecord({
         event_id: eventId,
-        storage_path: storagePath,
+        storage_path: key,
         file_type: formatFileType(file.type),
         mime_type: file.type,
         file_size_bytes: file.size,
         original_filename: file.name,
-        ...(thumbnailPath != null && { thumbnail_path: thumbnailPath }),
       })
+
+      startTimes.current.delete(id)
 
       if (recordError || !media) {
         updateFile(id, {
@@ -384,7 +338,6 @@ export function useUploadQueue(): UploadQueueState {
     [updateFile, queryClient]
   )
 
-  // Process the queue: start up to MAX_CONCURRENT pending uploads
   const processQueue = useCallback(
     (currentFiles: UploadFile[], eventId: string) => {
       const active = currentFiles.filter(
@@ -392,20 +345,11 @@ export function useUploadQueue(): UploadQueueState {
       ).length
       const pending = currentFiles.filter((f) => f.status === 'pending')
       const slots = MAX_CONCURRENT - active
-
       if (slots <= 0 || pending.length === 0) return
-
-      const toStart = pending.slice(0, slots)
-      toStart.forEach((f) => startUpload(f, eventId))
+      pending.slice(0, slots).forEach((f) => startUpload(f, eventId))
     },
     [startUpload]
   )
-
-  // Watch for pending files and dispatch uploads
-  useEffect(() => {
-    // We can't know the eventId here — processQueue is called explicitly
-    // from addFiles and retryFile with the correct eventId.
-  }, [])
 
   const addFiles = useCallback(
     (newFiles: File[], eventId: string) => {
@@ -421,12 +365,17 @@ export function useUploadQueue(): UploadQueueState {
   )
 
   const removeFile = useCallback((id: string) => {
-    // Abort TUS upload if running
-    const tusUpload = tusUploads.current.get(id)
-    if (tusUpload) {
-      tusUpload.abort(true).catch(() => {})
-      tusUploads.current.delete(id)
+    // Cancel in-flight XHR parts
+    abortControllers.current.get(id)?.abort()
+    abortControllers.current.delete(id)
+
+    // Tell R2 to clean up orphaned parts
+    const upload = activeUploads.current.get(id)
+    if (upload) {
+      abortMultipartUpload(upload.key, upload.uploadId).catch(() => {})
+      activeUploads.current.delete(id)
     }
+
     startTimes.current.delete(id)
     setFiles((prev) => prev.filter((f) => f.id !== id))
   }, [])

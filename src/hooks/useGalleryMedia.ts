@@ -20,7 +20,7 @@ export function useGalleryMedia(eventId: string, filters?: GalleryFilters) {
       }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    staleTime: 60_000,
+    staleTime: 300_000,
     refetchInterval: (query) => {
       const hasPending = query.state.data?.pages
         .flatMap((p) => p.media)

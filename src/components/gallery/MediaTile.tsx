@@ -43,16 +43,8 @@ export const MediaTile = memo(function MediaTile({
 }: MediaTileProps) {
   const [imgError, setImgError] = useState(false)
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const thumbnailUrl = item.thumbnail_url
-    ?? (item.thumbnail_path
-      ? `${supabaseUrl}/storage/v1/object/public/event-thumbnails/${item.thumbnail_path}`
-      : null)
-
-  const displayUrl = imgError
-    ? null
-    : (thumbnailUrl ??
-    (item.file_type === 'image' ? (item.signed_url ?? null) : null))
+  const thumbnailUrl = item.thumbnail_url ?? null
+  const displayUrl = imgError ? null : (thumbnailUrl ?? (item.file_type === 'image' ? (item.cdn_url ?? null) : null))
 
   const isFailed = !displayUrl && item.processing_status === 'failed'
 
@@ -88,20 +80,6 @@ export const MediaTile = memo(function MediaTile({
             priority={index < 8}
             loading={index < 8 ? undefined : 'lazy'}
             onError={() => setImgError(true)}
-          />
-        ) : item.file_type === 'video' && item.signed_url ? (
-          // No stored thumbnail yet — let the browser render the first frame
-          <video
-            src={item.signed_url}
-            className={cn(
-              'w-full h-auto block pointer-events-none transition-transform duration-300',
-              !isSelectMode && 'group-hover:scale-105',
-              isSelectMode && isSelected && 'brightness-75'
-            )}
-            style={{ aspectRatio }}
-            preload="metadata"
-            muted
-            playsInline
           />
         ) : isFailed ? (
           <div
