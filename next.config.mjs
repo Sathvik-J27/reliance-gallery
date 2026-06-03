@@ -9,8 +9,6 @@ const nextConfig = {
         port: '',
         pathname: '/**',
       },
-      // Cloudflare R2 via custom domain — update hostname when configured
-      // { protocol: 'https', hostname: 'media.yourdomain.com', pathname: '/**' },
     ],
   },
   output: 'standalone',

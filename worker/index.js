@@ -7,9 +7,14 @@ import {
 } from '@aws-sdk/client-s3'
 import sharp from 'sharp'
 import ffmpeg from 'fluent-ffmpeg'
+import ffmpegPath from 'ffmpeg-static'
 import { writeFile, readFile, unlink, mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, extname } from 'node:path'
+
+// Point fluent-ffmpeg at the bundled static binary so it works without a
+// system-level ffmpeg install (e.g. on Railway where nixpkgs PATH may differ).
+if (ffmpegPath) ffmpeg.setFfmpegPath(ffmpegPath)
 
 // ---------------------------------------------------------------------------
 // Config
@@ -196,7 +201,6 @@ async function poll() {
     .from('processing_queue')
     .select('id, media_id, attempt')
     .eq('status', 'queued')
-    .lt('attempt', MAX_ATTEMPTS + 1)
     .order('created_at', { ascending: true })
     .limit(3)
 

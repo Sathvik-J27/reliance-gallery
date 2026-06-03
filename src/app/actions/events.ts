@@ -1,7 +1,8 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
-import { createServiceClient } from '@/lib/supabase/service'
+import { PutObjectCommand } from '@aws-sdk/client-s3'
+import { r2, R2_BUCKET, R2_PUBLIC_URL } from '@/lib/r2'
 import type { Event } from '@/types/database'
 
 export type EventWithCount = Event & { media_count: number }
@@ -154,7 +155,7 @@ export async function updateEvent(
 }
 
 // ---------------------------------------------------------------------------
-// uploadEventCover — admin only; uses service role to bypass storage RLS
+// uploadEventCover — admin only; uploads directly to Cloudflare R2
 // ---------------------------------------------------------------------------
 export async function uploadEventCover(
   eventId: string,
@@ -186,31 +187,24 @@ export async function uploadEventCover(
     return { error: 'No file provided.' }
   }
 
-  const serviceClient = createServiceClient()
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? 'jpg'
+  const r2Key = `event-covers/${eventId}.${ext}`
+  const buffer = Buffer.from(await file.arrayBuffer())
 
-  // Create bucket if it doesn't exist yet (idempotent — ignore "already exists")
-  const { error: bucketError } = await serviceClient.storage.createBucket(
-    'event-thumbnails',
-    { public: true }
-  )
-  if (bucketError && !bucketError.message.toLowerCase().includes('already exists')) {
-    return { error: 'Storage setup failed: ' + bucketError.message }
+  try {
+    await r2.send(
+      new PutObjectCommand({
+        Bucket: R2_BUCKET,
+        Key: r2Key,
+        Body: buffer,
+        ContentType: file.type || 'image/jpeg',
+      })
+    )
+  } catch (err) {
+    return { error: 'Upload to R2 failed: ' + (err as Error).message }
   }
 
-  const ext = file.name.split('.').pop() ?? 'jpg'
-  const path = `covers/${eventId}.${ext}`
-
-  const { error: uploadError } = await serviceClient.storage
-    .from('event-thumbnails')
-    .upload(path, file, { upsert: true })
-
-  if (uploadError) {
-    return { error: uploadError.message }
-  }
-
-  const { data: { publicUrl } } = serviceClient.storage
-    .from('event-thumbnails')
-    .getPublicUrl(path)
+  const publicUrl = `${R2_PUBLIC_URL}/${r2Key}`
 
   const { error: updateError } = await supabase
     .from('events')
