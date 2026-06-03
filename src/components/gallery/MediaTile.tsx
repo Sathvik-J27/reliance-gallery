@@ -1,6 +1,6 @@
 'use client'
 
-import { memo, useState } from 'react'
+import { memo, useState, useEffect } from 'react'
 import Image from 'next/image'
 import { Play, Star, Loader2, AlertCircle, CheckCircle2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -43,8 +43,14 @@ export const MediaTile = memo(function MediaTile({
 }: MediaTileProps) {
   const [imgError, setImgError] = useState(false)
 
+  // Reset error state when URLs change (e.g. worker finishes and provides a real thumbnail)
+  useEffect(() => { setImgError(false) }, [item.thumbnail_url, item.cdn_url])
+
   const thumbnailUrl = item.thumbnail_url ?? null
-  const displayUrl = imgError ? null : (thumbnailUrl ?? (item.file_type === 'image' ? (item.cdn_url ?? null) : null))
+  // When thumbnail 404s fall back to cdn_url (original file) rather than showing a spinner
+  const displayUrl = (!imgError && thumbnailUrl)
+    ? thumbnailUrl
+    : (item.file_type === 'image' ? (item.cdn_url ?? null) : null)
 
   const isFailed = !displayUrl && item.processing_status === 'failed'
 

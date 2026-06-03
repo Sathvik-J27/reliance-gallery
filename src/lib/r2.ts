@@ -7,6 +7,9 @@ export const r2 = new S3Client({
     accessKeyId: process.env.R2_ACCESS_KEY_ID ?? 'PLACEHOLDER',
     secretAccessKey: process.env.R2_SECRET_ACCESS_KEY ?? 'PLACEHOLDER',
   },
+  // SDK v3 adds CRC32 checksums by default; R2 rejects them in browser XHR multipart flow
+  requestChecksumCalculation: 'WHEN_REQUIRED',
+  responseChecksumValidation: 'WHEN_REQUIRED',
 })
 
 export const R2_BUCKET = process.env.R2_BUCKET ?? 'gallery-media'

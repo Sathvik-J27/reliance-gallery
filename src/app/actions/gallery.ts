@@ -2,7 +2,7 @@
 
 import { cookies } from 'next/headers'
 import { createServiceClient } from '@/lib/supabase/service'
-import { r2ThumbnailUrl, r2DisplayUrl } from '@/lib/r2'
+import { r2ThumbnailUrl, r2DisplayUrl, R2_PUBLIC_URL } from '@/lib/r2'
 import type { Media, Profile, Event } from '@/types/database'
 
 export type MediaWithUploader = Media & {
@@ -151,7 +151,11 @@ export async function getEventMediaPagePublic(
   const media = items.map((item) => ({
     ...item,
     thumbnail_url: item.thumbnail_path ? r2ThumbnailUrl(item.thumbnail_path) : null,
-    cdn_url: item.display_path ? r2DisplayUrl(item.display_path) : null,
+    cdn_url: item.display_path
+      ? r2DisplayUrl(item.display_path)
+      : item.storage_path
+      ? `${R2_PUBLIC_URL}/${item.storage_path}`
+      : null,
   }))
 
   return { media, nextCursor }
