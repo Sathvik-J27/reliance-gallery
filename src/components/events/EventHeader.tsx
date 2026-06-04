@@ -65,9 +65,17 @@ export function EventHeader({ event, mediaCount, isAdmin }: EventHeaderProps) {
   async function handleCoverUpload() {
     if (!coverFile) return
     setIsUploadingCover(true)
+    const isHeic = coverFile.type === 'image/heic' || coverFile.type === 'image/heif'
+      || /\.(heic|heif)$/i.test(coverFile.name)
     try {
+      let fileToUpload: File | Blob = coverFile
+      if (isHeic) {
+        const heic2any = (await import('heic2any')).default
+        const converted = await heic2any({ blob: coverFile, toType: 'image/jpeg', quality: 0.92 })
+        fileToUpload = Array.isArray(converted) ? converted[0] : converted
+      }
       const fd = new FormData()
-      fd.append('file', coverFile)
+      fd.append('file', fileToUpload, isHeic ? coverFile.name.replace(/\.(heic|heif)$/i, '.jpg') : coverFile.name)
       const result = await uploadEventCover(event.id, fd)
 
       if (result.error) {

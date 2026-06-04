@@ -9,6 +9,13 @@ const nextConfig = {
         port: '',
         pathname: '/**',
       },
+      // Legacy Supabase Storage URLs (cover images not yet migrated to R2)
+      {
+        protocol: 'https',
+        hostname: '*.supabase.co',
+        port: '',
+        pathname: '/storage/v1/object/public/**',
+      },
     ],
   },
   output: 'standalone',

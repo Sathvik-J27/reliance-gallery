@@ -81,7 +81,7 @@ export function EventGrid({ events, isAdmin }: EventGridProps) {
           )}
         >
           {filtered.map((event) => (
-            <EventCard key={event.id} event={event} />
+            <EventCard key={event.id} event={event} isAdmin={isAdmin} />
           ))}
         </div>
       )}
