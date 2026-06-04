@@ -6,6 +6,7 @@ import {
   DeleteObjectCommand,
 } from '@aws-sdk/client-s3'
 import sharp from 'sharp'
+import heicConvert from 'heic-convert'
 import ffmpeg from 'fluent-ffmpeg'
 import ffmpegPath from 'ffmpeg-static'
 import { writeFile, readFile, unlink, mkdtemp } from 'node:fs/promises'
@@ -66,8 +67,15 @@ async function deleteFromR2(key) {
 // Image processing
 // ---------------------------------------------------------------------------
 async function processImage(media) {
-  const { id, storage_path, event_id } = media
-  const original = await downloadFromR2(storage_path)
+  const { id, storage_path, event_id, mime_type } = media
+  let original = await downloadFromR2(storage_path)
+
+  const isHeic = mime_type === 'image/heic' || mime_type === 'image/heif'
+    || /\.(heic|heif)$/i.test(storage_path)
+  if (isHeic) {
+    original = Buffer.from(await heicConvert({ buffer: original, format: 'JPEG', quality: 1 }))
+  }
+
   const img = sharp(original)
 
   const [thumbBuf, displayBuf] = await Promise.all([
@@ -162,7 +170,7 @@ async function processJob(job) {
 
   const { data: media, error: mediaError } = await supabase
     .from('media')
-    .select('id, event_id, storage_path, file_type')
+    .select('id, event_id, storage_path, file_type, mime_type')
     .eq('id', mediaId)
     .single()
 
