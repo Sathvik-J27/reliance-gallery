@@ -58,6 +58,7 @@ export default async function EventPage({ params }: EventPageProps) {
     cookieStore.get(`event_lock_${event.id}`)?.value === '1'
 
   // Strip access_code before passing to any client component
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { access_code: _ac, ...eventForClient } = event
 
   const mainClass = `mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-8 sm:pt-12${user ? ' pb-24 md:pb-12' : ' pb-8 sm:pb-12'}`
