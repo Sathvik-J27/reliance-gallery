@@ -1,6 +1,6 @@
 import Image from 'next/image'
 import Link from 'next/link'
-import { ImageIcon, Images, Lock } from 'lucide-react'
+import { Images, Lock } from 'lucide-react'
 import { getEventsPublic } from '@/app/actions/gallery'
 import { Badge } from '@/components/ui/badge'
 import type { Metadata } from 'next'
@@ -29,23 +29,14 @@ function VisitorEventCard({ event }: { event: EventWithCount }) {
       className="group block bg-white border border-brand-border rounded-xl shadow-sm overflow-hidden hover:-translate-y-0.5 hover:shadow-md hover:border-gold/40 transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold focus-visible:ring-offset-2"
     >
       {/* Cover */}
-      <div className="relative aspect-video w-full overflow-hidden bg-gradient-to-br from-amber-50 to-yellow-100">
-        {event.cover_image_url ? (
-          <Image
-            src={event.cover_image_url}
-            alt={`Cover for ${event.name}`}
-            fill
-            className="object-contain transition-transform duration-300 group-hover:scale-[1.02]"
-            sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
-          />
-        ) : (
-          <>
-            <div className="flex h-full w-full items-center justify-center">
-              <ImageIcon className="h-10 w-10 text-gold/60" />
-            </div>
-            <div className="absolute inset-0 bg-gradient-to-br from-gold/5 via-transparent to-gold/10" />
-          </>
-        )}
+      <div className="relative aspect-video w-full overflow-hidden bg-black">
+        <Image
+          src={event.cover_image_url ?? '/RELIANCE-Tagline-Black.png'}
+          alt={`Cover for ${event.name}`}
+          fill
+          className="object-cover"
+          sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+        />
 
         {event.is_locked && (
           <div className="absolute top-2 right-2 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 backdrop-blur-sm">

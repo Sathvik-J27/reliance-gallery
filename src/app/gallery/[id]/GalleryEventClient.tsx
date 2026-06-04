@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { FilterBar } from '@/components/gallery/FilterBar'
 import { VisitorMediaGrid } from '@/components/gallery/VisitorMediaGrid'
 import type { GalleryFilters } from '@/hooks/useGalleryMedia'
@@ -17,6 +17,12 @@ export function GalleryEventClient({ eventId, uploaders, visitorLabel }: Gallery
   const [uploaderId, setUploaderId] = useState<string | undefined>()
   const [dateFrom, setDateFrom] = useState<string | undefined>()
   const [dateTo, setDateTo] = useState<string | undefined>()
+
+  useEffect(() => {
+    return () => {
+      navigator.sendBeacon(`/api/events/${eventId}/unlock`)
+    }
+  }, [eventId])
 
   const filters: GalleryFilters = {
     ...(fileType && { fileType }),
