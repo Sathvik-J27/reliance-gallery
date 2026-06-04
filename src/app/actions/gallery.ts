@@ -11,7 +11,11 @@ export type MediaWithUploader = Media & {
   cdn_url?: string | null        // CDN URL for display-quality image/video (lightbox)
 }
 
-export type EventWithCount = Event & { media_count: number }
+// access_code is stripped — clients only receive is_locked boolean
+export type EventWithCount = Omit<Event, 'access_code'> & {
+  media_count: number
+  is_locked: boolean
+}
 
 // ---------------------------------------------------------------------------
 // assertVisitorAccess — throws if visitor cookie is missing or version-stale
@@ -48,12 +52,12 @@ export async function getEventsPublic(): Promise<{
   if (error) return { error: error.message }
 
   const events: EventWithCount[] = (data ?? []).map((row) => {
-    const { media, ...rest } = row as Event & {
+    const { media, access_code, ...rest } = row as Event & {
       media: Array<{ count: number }>
     }
     const media_count =
       Array.isArray(media) && media.length > 0 ? (media[0].count ?? 0) : 0
-    return { ...rest, media_count }
+    return { ...rest, media_count, is_locked: access_code !== null }
   })
 
   return { events }

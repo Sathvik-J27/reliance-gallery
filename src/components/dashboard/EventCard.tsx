@@ -1,13 +1,10 @@
 'use client'
 
-import { useState, useRef, useCallback } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
-import { ImageIcon, ImagePlus, Loader2 } from 'lucide-react'
-import { toast } from 'sonner'
+import { ImageIcon, Lock } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
-import { uploadEventCover } from '@/app/actions/events'
 import type { EventWithCount } from '@/app/actions/events'
 
 function formatEventDate(dateStr: string): string {
@@ -22,49 +19,11 @@ function formatEventDate(dateStr: string): string {
 
 interface EventCardProps {
   event: EventWithCount
-  isAdmin?: boolean
 }
 
-export function EventCard({ event, isAdmin = false }: EventCardProps) {
-  const [coverUrl, setCoverUrl] = useState(event.cover_image_url ?? null)
-  const [uploading, setUploading] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
+export function EventCard({ event }: EventCardProps) {
+  const coverUrl = event.cover_image_url ?? null
   const mediaLabel = event.media_count === 1 ? '1 item' : `${event.media_count} items`
-
-  const handleFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    e.target.value = ''
-
-    setUploading(true)
-    try {
-      const isHeic = file.type === 'image/heic' || file.type === 'image/heif'
-        || /\.(heic|heif)$/i.test(file.name)
-
-      let fileToUpload: File | Blob = file
-      if (isHeic) {
-        const heic2any = (await import('heic2any')).default
-        const converted = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.92 })
-        fileToUpload = Array.isArray(converted) ? converted[0] : converted
-      }
-
-      const fd = new FormData()
-      fd.append('file', fileToUpload, isHeic ? file.name.replace(/\.(heic|heif)$/i, '.jpg') : file.name)
-      const result = await uploadEventCover(event.id, fd)
-
-      if (result.error) {
-        toast.error(result.error)
-        return
-      }
-
-      setCoverUrl(result.cover_image_url ?? null)
-      toast.success('Cover image updated.')
-    } catch {
-      toast.error('Something went wrong. Please try again.')
-    } finally {
-      setUploading(false)
-    }
-  }, [event.id])
 
   return (
     <div className={cn(
@@ -95,38 +54,12 @@ export function EventCard({ event, isAdmin = false }: EventCardProps) {
           </div>
         )}
 
-        {/* Admin: hover overlay to change cover */}
-        {isAdmin && (
-          <div
-            className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity duration-200"
-            onClick={(e) => {
-              e.preventDefault()
-              fileInputRef.current?.click()
-            }}
-          >
-            {uploading ? (
-              <Loader2 className="h-7 w-7 text-white animate-spin" />
-            ) : (
-              <div className="flex flex-col items-center gap-1.5 text-white">
-                <ImagePlus className="h-7 w-7" />
-                <span className="font-inter text-xs font-medium">
-                  {coverUrl ? 'Change Cover' : 'Add Cover'}
-                </span>
-              </div>
-            )}
+        {event.is_locked && (
+          <div className="absolute top-2 right-2 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 backdrop-blur-sm">
+            <Lock className="h-3.5 w-3.5 text-white" />
           </div>
         )}
       </Link>
-
-      {isAdmin && (
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={handleFileChange}
-        />
-      )}
 
       {/* Card body */}
       <Link

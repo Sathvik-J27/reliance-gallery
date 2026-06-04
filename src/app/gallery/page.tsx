@@ -1,6 +1,6 @@
 import Image from 'next/image'
 import Link from 'next/link'
-import { ImageIcon, Images } from 'lucide-react'
+import { ImageIcon, Images, Lock } from 'lucide-react'
 import { getEventsPublic } from '@/app/actions/gallery'
 import { Badge } from '@/components/ui/badge'
 import type { Metadata } from 'next'
@@ -45,6 +45,12 @@ function VisitorEventCard({ event }: { event: EventWithCount }) {
             </div>
             <div className="absolute inset-0 bg-gradient-to-br from-gold/5 via-transparent to-gold/10" />
           </>
+        )}
+
+        {event.is_locked && (
+          <div className="absolute top-2 right-2 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 backdrop-blur-sm">
+            <Lock className="h-3.5 w-3.5 text-white" />
+          </div>
         )}
       </div>
 

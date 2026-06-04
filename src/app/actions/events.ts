@@ -1,11 +1,17 @@
 'use server'
 
+import { cookies } from 'next/headers'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { PutObjectCommand } from '@aws-sdk/client-s3'
 import { r2, R2_BUCKET, R2_PUBLIC_URL } from '@/lib/r2'
 import type { Event } from '@/types/database'
 
-export type EventWithCount = Event & { media_count: number }
+// access_code is stripped before sending to the client
+export type EventWithCount = Omit<Event, 'access_code'> & {
+  media_count: number
+  is_locked: boolean
+}
 
 // ---------------------------------------------------------------------------
 // createEvent — admin only
@@ -14,6 +20,7 @@ export async function createEvent(data: {
   name: string
   description?: string
   event_date: string
+  access_code?: string | null
 }): Promise<{ event?: Event; error?: string }> {
   const supabase = await createClient()
 
@@ -26,7 +33,6 @@ export async function createEvent(data: {
     return { error: 'You must be signed in to create an event.' }
   }
 
-  // Verify admin role
   const { data: profile, error: profileError } = await supabase
     .from('profiles')
     .select('role')
@@ -48,6 +54,7 @@ export async function createEvent(data: {
       description: data.description ?? null,
       event_date: data.event_date,
       created_by: user.id,
+      access_code: data.access_code || null,
     })
     .select()
     .single()
@@ -60,7 +67,7 @@ export async function createEvent(data: {
 }
 
 // ---------------------------------------------------------------------------
-// getEvents — all events with media count
+// getEvents — all events with media count (access_code stripped from result)
 // ---------------------------------------------------------------------------
 export async function getEvents(): Promise<{
   events?: EventWithCount[]
@@ -78,19 +85,19 @@ export async function getEvents(): Promise<{
   }
 
   const events: EventWithCount[] = (data ?? []).map((row) => {
-    const { media, ...rest } = row as Event & {
+    const { media, access_code, ...rest } = row as Event & {
       media: Array<{ count: number }>
     }
     const media_count =
       Array.isArray(media) && media.length > 0 ? (media[0].count ?? 0) : 0
-    return { ...rest, media_count }
+    return { ...rest, media_count, is_locked: access_code !== null }
   })
 
   return { events }
 }
 
 // ---------------------------------------------------------------------------
-// getEvent — single event by id
+// getEvent — single event by id (includes access_code for server-side use only)
 // ---------------------------------------------------------------------------
 export async function getEvent(
   id: string
@@ -115,7 +122,7 @@ export async function getEvent(
 // ---------------------------------------------------------------------------
 export async function updateEvent(
   id: string,
-  data: Partial<Pick<Event, 'name' | 'description' | 'event_date' | 'cover_image_url'>>
+  data: Partial<Pick<Event, 'name' | 'description' | 'event_date' | 'cover_image_url' | 'access_code'>>
 ): Promise<{ error?: string }> {
   const supabase = await createClient()
 
@@ -252,6 +259,47 @@ export async function deleteEvent(id: string): Promise<{ error?: string }> {
   if (error) {
     return { error: error.message }
   }
+
+  return {}
+}
+
+// ---------------------------------------------------------------------------
+// verifyEventCode — validates a per-event access code and sets an httpOnly
+// cookie granting access. Uses service client so guests (unauthenticated)
+// can also call this action.
+// ---------------------------------------------------------------------------
+export async function verifyEventCode(
+  eventId: string,
+  code: string
+): Promise<{ error?: string }> {
+  const supabase = createServiceClient()
+
+  const { data: event, error } = await supabase
+    .from('events')
+    .select('access_code')
+    .eq('id', eventId)
+    .single()
+
+  if (error || !event) {
+    return { error: 'Event not found.' }
+  }
+
+  if (!event.access_code) {
+    return {}
+  }
+
+  if (event.access_code.toLowerCase() !== code.trim().toLowerCase()) {
+    return { error: 'Incorrect access code. Please try again.' }
+  }
+
+  const cookieStore = await cookies()
+  cookieStore.set(`event_lock_${eventId}`, '1', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 60 * 60 * 24 * 7,
+    path: '/',
+  })
 
   return {}
 }

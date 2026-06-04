@@ -2,10 +2,16 @@
 
 import { useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { Pencil, Trash2, Images, Loader2, ImagePlus, X, ArrowLeft } from 'lucide-react'
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
+import { Pencil, Trash2, Images, Loader2, ImagePlus, X, ArrowLeft, Lock, LockOpen } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
 import {
   Dialog,
   DialogContent,
@@ -15,7 +21,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import Link from 'next/link'
-import { deleteEvent, uploadEventCover } from '@/app/actions/events'
+import { deleteEvent, uploadEventCover, updateEvent } from '@/app/actions/events'
 import { UploadButton } from '@/components/events/UploadFAB'
 import type { Event } from '@/types/database'
 
@@ -30,14 +36,25 @@ function formatEventDate(dateStr: string): string {
   })
 }
 
+const editSchema = z.object({
+  name: z.string().min(1, 'Event name is required').max(120, 'Must be under 120 characters'),
+  description: z.string().max(500, 'Must be under 500 characters').optional(),
+  event_date: z.string().min(1, 'Event date is required'),
+})
+
+type EditFormValues = z.infer<typeof editSchema>
+
 interface EventHeaderProps {
-  event: Event
+  // access_code is intentionally excluded — it must not be serialised to the client
+  event: Omit<Event, 'access_code'>
   mediaCount: number
   isAdmin: boolean
+  isLocked: boolean
 }
 
-export function EventHeader({ event, mediaCount, isAdmin }: EventHeaderProps) {
+export function EventHeader({ event, mediaCount, isAdmin, isLocked }: EventHeaderProps) {
   const router = useRouter()
+
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
 
@@ -46,6 +63,28 @@ export function EventHeader({ event, mediaCount, isAdmin }: EventHeaderProps) {
   const [coverPreview, setCoverPreview] = useState<string | null>(null)
   const [isUploadingCover, setIsUploadingCover] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const [editDialogOpen, setEditDialogOpen] = useState(false)
+  const [isEditSubmitting, setIsEditSubmitting] = useState(false)
+
+  const [lockDialogOpen, setLockDialogOpen] = useState(false)
+  const [unlockDialogOpen, setUnlockDialogOpen] = useState(false)
+  const [lockCode, setLockCode] = useState('')
+  const [isLockSubmitting, setIsLockSubmitting] = useState(false)
+
+  const {
+    register,
+    handleSubmit,
+    reset,
+    formState: { errors },
+  } = useForm<EditFormValues>({
+    resolver: zodResolver(editSchema),
+    defaultValues: {
+      name: event.name,
+      description: event.description ?? '',
+      event_date: event.event_date,
+    },
+  })
 
   function handleCoverSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -113,6 +152,66 @@ export function EventHeader({ event, mediaCount, isAdmin }: EventHeaderProps) {
     }
   }
 
+  async function handleEditSubmit(values: EditFormValues) {
+    setIsEditSubmitting(true)
+    try {
+      const result = await updateEvent(event.id, {
+        name: values.name,
+        description: values.description || null,
+        event_date: values.event_date,
+      })
+      if (result.error) {
+        toast.error(result.error)
+        return
+      }
+      toast.success('Event updated.')
+      setEditDialogOpen(false)
+      router.refresh()
+    } catch {
+      toast.error('Something went wrong. Please try again.')
+    } finally {
+      setIsEditSubmitting(false)
+    }
+  }
+
+  async function handleSetLock() {
+    if (!lockCode.trim()) return
+    setIsLockSubmitting(true)
+    try {
+      const result = await updateEvent(event.id, { access_code: lockCode.trim() })
+      if (result.error) {
+        toast.error(result.error)
+        return
+      }
+      toast.success('Event locked.')
+      setLockDialogOpen(false)
+      setLockCode('')
+      router.refresh()
+    } catch {
+      toast.error('Something went wrong. Please try again.')
+    } finally {
+      setIsLockSubmitting(false)
+    }
+  }
+
+  async function handleUnlock() {
+    setIsLockSubmitting(true)
+    try {
+      const result = await updateEvent(event.id, { access_code: null })
+      if (result.error) {
+        toast.error(result.error)
+        return
+      }
+      toast.success('Event unlocked.')
+      setUnlockDialogOpen(false)
+      router.refresh()
+    } catch {
+      toast.error('Something went wrong. Please try again.')
+    } finally {
+      setIsLockSubmitting(false)
+    }
+  }
+
   const mediaLabel =
     mediaCount === 1 ? '1 item' : `${mediaCount} items`
 
@@ -131,7 +230,7 @@ export function EventHeader({ event, mediaCount, isAdmin }: EventHeaderProps) {
         {/* Top row: title + actions */}
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="min-w-0">
-            <div className="relative inline-block">
+            <div className="relative inline-flex items-center gap-2">
               <h1
                 className={cn(
                   'font-playfair text-3xl sm:text-4xl font-bold text-brand-text',
@@ -140,8 +239,11 @@ export function EventHeader({ event, mediaCount, isAdmin }: EventHeaderProps) {
               >
                 {event.name}
               </h1>
-              <div className="mt-1 h-0.5 w-16 bg-gold rounded-full" />
+              {isLocked && (
+                <Lock className="h-5 w-5 text-gray-400 shrink-0 mt-1" aria-label="Event is locked" />
+              )}
             </div>
+            <div className="mt-1 h-0.5 w-16 bg-gold rounded-full" />
 
             <p className="mt-3 font-inter text-sm text-gray-500">
               {formatEventDate(event.event_date)}
@@ -178,10 +280,37 @@ export function EventHeader({ event, mediaCount, isAdmin }: EventHeaderProps) {
                   variant="outline"
                   size="icon"
                   aria-label="Edit event"
-                  onClick={() => router.push(`/events/${event.id}/edit`)}
+                  onClick={() => {
+                    reset({
+                      name: event.name,
+                      description: event.description ?? '',
+                      event_date: event.event_date,
+                    })
+                    setEditDialogOpen(true)
+                  }}
                 >
                   <Pencil className="h-4 w-4" />
                 </Button>
+
+                {isLocked ? (
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    aria-label="Unlock event"
+                    onClick={() => setUnlockDialogOpen(true)}
+                  >
+                    <LockOpen className="h-4 w-4" />
+                  </Button>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    aria-label="Lock event"
+                    onClick={() => setLockDialogOpen(true)}
+                  >
+                    <Lock className="h-4 w-4" />
+                  </Button>
+                )}
 
                 <Button
                   variant="destructive"
@@ -196,6 +325,179 @@ export function EventHeader({ event, mediaCount, isAdmin }: EventHeaderProps) {
           </div>
         </div>
       </div>
+
+      {/* Edit event dialog */}
+      <Dialog
+        open={editDialogOpen}
+        onOpenChange={(open) => {
+          if (!isEditSubmitting) setEditDialogOpen(open)
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Edit Event</DialogTitle>
+            <DialogDescription>
+              Update the event name, description, or date.
+            </DialogDescription>
+          </DialogHeader>
+
+          <form onSubmit={handleSubmit(handleEditSubmit)} className="mt-4 space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-name">
+                Event Name <span className="text-red-500">*</span>
+              </Label>
+              <Input
+                id="edit-name"
+                hasError={!!errors.name}
+                {...register('name')}
+              />
+              {errors.name && (
+                <p className="text-xs text-red-500 font-inter">{errors.name.message}</p>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-description">Description</Label>
+              <Textarea
+                id="edit-description"
+                rows={3}
+                hasError={!!errors.description}
+                {...register('description')}
+              />
+              {errors.description && (
+                <p className="text-xs text-red-500 font-inter">{errors.description.message}</p>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-date">
+                Event Date <span className="text-red-500">*</span>
+              </Label>
+              <Input
+                id="edit-date"
+                type="date"
+                hasError={!!errors.event_date}
+                {...register('event_date')}
+              />
+              {errors.event_date && (
+                <p className="text-xs text-red-500 font-inter">{errors.event_date.message}</p>
+              )}
+            </div>
+
+            <DialogFooter className="pt-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setEditDialogOpen(false)}
+                disabled={isEditSubmitting}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={isEditSubmitting}>
+                {isEditSubmitting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Saving…
+                  </>
+                ) : (
+                  'Save Changes'
+                )}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Lock event dialog */}
+      <Dialog
+        open={lockDialogOpen}
+        onOpenChange={(open) => {
+          if (!isLockSubmitting) {
+            if (!open) setLockCode('')
+            setLockDialogOpen(open)
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Lock This Event</DialogTitle>
+            <DialogDescription>
+              Set an access code. Anyone without admin access will need to enter
+              this code before they can view the event.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="mt-2 space-y-1.5">
+            <Label htmlFor="lock-code">Access Code</Label>
+            <Input
+              id="lock-code"
+              placeholder="e.g. WEDDING2024"
+              value={lockCode}
+              onChange={(e) => setLockCode(e.target.value)}
+              autoFocus
+              autoComplete="off"
+            />
+          </div>
+
+          <DialogFooter className="mt-4">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setLockCode('')
+                setLockDialogOpen(false)
+              }}
+              disabled={isLockSubmitting}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSetLock}
+              disabled={!lockCode.trim() || isLockSubmitting}
+            >
+              {isLockSubmitting ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Locking…
+                </>
+              ) : (
+                'Set Lock'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Unlock event dialog */}
+      <Dialog open={unlockDialogOpen} onOpenChange={setUnlockDialogOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Unlock This Event</DialogTitle>
+            <DialogDescription>
+              Remove the access code. Anyone with gallery access will be able to
+              view this event without entering a code.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="mt-4">
+            <Button
+              variant="outline"
+              onClick={() => setUnlockDialogOpen(false)}
+              disabled={isLockSubmitting}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleUnlock} disabled={isLockSubmitting}>
+              {isLockSubmitting ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Unlocking…
+                </>
+              ) : (
+                'Unlock Event'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Cover image dialog */}
       <Dialog

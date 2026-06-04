@@ -4,7 +4,7 @@ import { useState, useRef } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { Loader2, ImagePlus, X } from 'lucide-react'
+import { Loader2, ImagePlus, X, Lock } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   Dialog,
@@ -27,6 +27,7 @@ const schema = z.object({
     .max(120, 'Event name must be under 120 characters'),
   description: z.string().max(500, 'Description must be under 500 characters').optional(),
   event_date: z.string().min(1, 'Event date is required'),
+  access_code: z.string().max(100, 'Code must be under 100 characters').optional(),
 })
 
 type FormValues = z.infer<typeof schema>
@@ -58,6 +59,7 @@ export function CreateEventModal({
       name: '',
       description: '',
       event_date: '',
+      access_code: '',
     },
   })
 
@@ -83,6 +85,7 @@ export function CreateEventModal({
         name: values.name,
         description: values.description || undefined,
         event_date: values.event_date,
+        access_code: values.access_code?.trim() || null,
       })
 
       if (result.error) {
@@ -177,6 +180,25 @@ export function CreateEventModal({
               <p className="text-xs text-red-500 font-inter">
                 {errors.event_date.message}
               </p>
+            )}
+          </div>
+
+          {/* Access Code */}
+          <div className="space-y-1.5">
+            <Label htmlFor="event-access-code" className="flex items-center gap-1.5">
+              <Lock className="h-3.5 w-3.5 text-gray-400" />
+              Access Code{' '}
+              <span className="text-xs font-normal text-gray-400">(optional — locks the event)</span>
+            </Label>
+            <Input
+              id="event-access-code"
+              placeholder="e.g. WEDDING2024"
+              autoComplete="off"
+              hasError={!!errors.access_code}
+              {...register('access_code')}
+            />
+            {errors.access_code && (
+              <p className="text-xs text-red-500 font-inter">{errors.access_code.message}</p>
             )}
           </div>
 

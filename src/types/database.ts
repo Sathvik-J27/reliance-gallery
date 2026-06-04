@@ -16,6 +16,7 @@ export interface Event {
   description: string | null
   event_date: string
   cover_image_url: string | null
+  access_code: string | null
   created_by: string | null
   created_at: string
 }

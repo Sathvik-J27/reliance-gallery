@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 import { cookies } from 'next/headers'
 import { ArrowLeft, CalendarDays, Images } from 'lucide-react'
 import { getEventPublic, getEventUploadersPublic } from '@/app/actions/gallery'
+import { EventLockScreen } from '@/components/events/EventLockScreen'
 import { GalleryEventClient } from './GalleryEventClient'
 import { createServiceClient } from '@/lib/supabase/service'
 import type { Metadata } from 'next'
@@ -41,12 +42,29 @@ export default async function GalleryEventPage({ params }: Props) {
   const event = eventResult.event
   const uploaders = uploadersResult.uploaders ?? []
 
-  // Get media count via service role
+  const isLocked = !!event.access_code
+  const hasAccess =
+    !isLocked ||
+    cookieStore.get(`event_lock_${event.id}`)?.value === '1'
+
   const supabase = createServiceClient()
   const { count: mediaCount } = await supabase
     .from('media')
     .select('*', { count: 'exact', head: true })
     .eq('event_id', event.id)
+
+  if (!hasAccess) {
+    return (
+      <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8 sm:py-12">
+        <EventLockScreen
+          eventId={event.id}
+          eventName={event.name}
+          backHref="/gallery"
+          backLabel="All events"
+        />
+      </main>
+    )
+  }
 
   return (
     <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8 sm:py-12">
