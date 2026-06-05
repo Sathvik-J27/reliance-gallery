@@ -10,7 +10,7 @@ import {
   abortMultipartUpload,
 } from '@/app/actions/upload'
 
-const MAX_CONCURRENT = 3
+const MAX_CONCURRENT = 5
 const PART_SIZE = 8 * 1024 * 1024 // 8 MB — must match upload.ts
 
 export interface UploadFile {
@@ -125,6 +125,12 @@ export function useUploadQueue(): UploadQueueState {
   const activeUploads = useRef<Map<string, { key: string; uploadId: string }>>(new Map())
   // Map from file id → upload start timestamp (ms)
   const startTimes = useRef<Map<string, number>>(new Map())
+  // Refs for queue draining after each upload slot frees
+  const filesRef = useRef<UploadFile[]>([])
+  const eventIdRef = useRef<string | null>(null)
+  const processQueueRef = useRef<((f: UploadFile[], eid: string) => void) | null>(null)
+  // Tracks uploads actively in-flight to prevent double-starts on drain races
+  const inProgressIds = useRef<Set<string>>(new Set())
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const wakeLockRef = useRef<any>(null)
   const hasActiveRef = useRef(false)
@@ -134,6 +140,9 @@ export function useUploadQueue(): UploadQueueState {
   )
 
   useEffect(() => { hasActiveRef.current = hasActiveUploads }, [hasActiveUploads])
+
+  // Keep filesRef current so drain callbacks always see the latest file states
+  filesRef.current = files
 
   // Warn on navigation if uploads are in progress
   useEffect(() => {
@@ -194,9 +203,18 @@ export function useUploadQueue(): UploadQueueState {
   )
 
   // Core upload logic for a single file — R2 S3 multipart
+  const drainQueue = (eventId: string) => {
+    setTimeout(() => {
+      if (processQueueRef.current) processQueueRef.current(filesRef.current, eventId)
+    }, 0)
+  }
+
   const startUpload = useCallback(
     async (fileEntry: UploadFile, eventId: string) => {
       const { id } = fileEntry
+
+      if (inProgressIds.current.has(id)) return
+      inProgressIds.current.add(id)
 
       const file = await normalizeFile(fileEntry.file)
       if (file !== fileEntry.file) {
@@ -216,6 +234,8 @@ export function useUploadQueue(): UploadQueueState {
           errorMessage: initError ?? 'Failed to initiate upload.',
         })
         startTimes.current.delete(id)
+        inProgressIds.current.delete(id)
+        drainQueue(eventId)
         return
       }
 
@@ -270,9 +290,11 @@ export function useUploadQueue(): UploadQueueState {
       } catch (err) {
         abortControllers.current.delete(id)
         startTimes.current.delete(id)
+        inProgressIds.current.delete(id)
 
         if (err instanceof DOMException && err.name === 'AbortError') {
           // User cancelled — server-side cleanup handled by removeFile
+          drainQueue(eventId)
           return
         }
 
@@ -285,6 +307,7 @@ export function useUploadQueue(): UploadQueueState {
           status: 'error',
           errorMessage: (err as Error).message ?? 'Upload failed.',
         })
+        drainQueue(eventId)
         return
       }
 
@@ -300,7 +323,9 @@ export function useUploadQueue(): UploadQueueState {
 
       if (completeError) {
         startTimes.current.delete(id)
+        inProgressIds.current.delete(id)
         updateFile(id, { status: 'error', errorMessage: completeError })
+        drainQueue(eventId)
         return
       }
 
@@ -322,37 +347,42 @@ export function useUploadQueue(): UploadQueueState {
       })
 
       startTimes.current.delete(id)
+      inProgressIds.current.delete(id)
 
       if (recordError || !media) {
         updateFile(id, {
           status: 'error',
           errorMessage: recordError ?? 'Failed to save media record.',
         })
+        drainQueue(eventId)
         return
       }
 
       updateFile(id, { status: 'done', mediaId: media.id })
       queryClient.invalidateQueries({ queryKey: ['gallery', eventId] })
       queryClient.invalidateQueries({ queryKey: ['visitor-gallery', eventId] })
+      drainQueue(eventId)
     },
     [updateFile, queryClient]
   )
 
   const processQueue = useCallback(
     (currentFiles: UploadFile[], eventId: string) => {
-      const active = currentFiles.filter(
-        (f) => f.status === 'uploading' || f.status === 'processing'
-      ).length
-      const pending = currentFiles.filter((f) => f.status === 'pending')
+      const active = inProgressIds.current.size
+      const pending = currentFiles.filter(
+        (f) => f.status === 'pending' && !inProgressIds.current.has(f.id)
+      )
       const slots = MAX_CONCURRENT - active
       if (slots <= 0 || pending.length === 0) return
       pending.slice(0, slots).forEach((f) => startUpload(f, eventId))
     },
     [startUpload]
   )
+  processQueueRef.current = processQueue
 
   const addFiles = useCallback(
     (newFiles: File[], eventId: string) => {
+      eventIdRef.current = eventId
       const entries = newFiles.map(createUploadFile)
       let latestFiles: UploadFile[] = []
       setFiles((prev) => {
