@@ -125,13 +125,14 @@ async function processVideo(media) {
   await runFfmpeg(inputPath, displayPath, (cmd) =>
     cmd
       .videoCodec('libx264')
+      .audioCodec('aac')
+      .audioBitrate('128k')
       .outputOptions([
         '-crf 23',
         '-preset fast',
         '-movflags +faststart',
         `-vf scale=-2:'min(ih,${VIDEO_DISPLAY_HEIGHT})'`,
       ])
-      .noAudio()
       .format('mp4')
   )
 

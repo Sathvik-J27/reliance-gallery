@@ -7,6 +7,7 @@ import {
   UploadPartCommand,
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
+  PutObjectCommand,
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
@@ -108,6 +109,35 @@ export async function completeMultipartUpload(
   )
 
   return { success: true }
+}
+
+// ---------------------------------------------------------------------------
+// getPresignedThumbnailUploadUrl
+// Returns a short-lived presigned PUT URL for uploading a video thumbnail
+// captured client-side (before the worker processes it server-side).
+// ---------------------------------------------------------------------------
+export async function getPresignedThumbnailUploadUrl(
+  thumbnailKey: string
+): Promise<{ url?: string; error?: string }> {
+  const supabase = await createClient()
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser()
+
+  if (authError || !user) return { error: 'Not authenticated.' }
+
+  const url = await getSignedUrl(
+    r2,
+    new PutObjectCommand({
+      Bucket: R2_BUCKET,
+      Key: thumbnailKey,
+      ContentType: 'image/jpeg',
+    }),
+    { expiresIn: 300 }
+  )
+
+  return { url }
 }
 
 // ---------------------------------------------------------------------------

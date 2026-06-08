@@ -113,11 +113,14 @@ export function Lightbox({
     return () => { document.body.style.overflow = '' }
   }, [])
 
-  // Pause video when navigating away
+  // Stop the current video before switching to the next one
   useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.pause()
-      videoRef.current.currentTime = 0
+    const video = videoRef.current
+    return () => {
+      if (video) {
+        video.pause()
+        video.currentTime = 0
+      }
     }
   }, [idx])
 
@@ -344,14 +347,15 @@ export function Lightbox({
                 <video
                   ref={videoRef}
                   src={currentUrl}
+                  poster={item.thumbnail_url ?? undefined}
                   autoPlay
-                  muted
+                  muted={isMuted}
                   playsInline
-                  controls={isVisitor ? false : !isMuted}
+                  controls={!isVisitor}
                   className="max-w-full max-h-full rounded"
                 />
-                {/* Mute/unmute — always shown for visitors; shown for authenticated when muted */}
-                {(isVisitor || isMuted) && (
+                {/* Mute/unmute overlay — only for visitors (no native controls) */}
+                {isVisitor && (
                   <button
                     className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full bg-black/60 px-4 py-1.5 text-white text-sm font-inter hover:bg-black/80 transition-colors"
                     onClick={handleToggleMute}

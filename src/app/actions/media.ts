@@ -269,6 +269,31 @@ export async function getEventMediaPage(
 }
 
 // ---------------------------------------------------------------------------
+// updateMediaThumbnail — set thumbnail_path after client-side capture
+// ---------------------------------------------------------------------------
+export async function updateMediaThumbnail(
+  mediaId: string,
+  thumbnailPath: string
+): Promise<{ error?: string }> {
+  const supabase = await createClient()
+
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser()
+
+  if (authError || !user) return { error: 'Not authenticated.' }
+
+  const { error } = await supabase
+    .from('media')
+    .update({ thumbnail_path: thumbnailPath })
+    .eq('id', mediaId)
+    .eq('uploader_id', user.id)
+
+  return { error: error?.message }
+}
+
+// ---------------------------------------------------------------------------
 // deleteMediaBatch — admin-only bulk delete
 // ---------------------------------------------------------------------------
 export async function deleteMediaBatch(

@@ -3,12 +3,14 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { toast } from 'sonner'
 import { useQueryClient } from '@tanstack/react-query'
-import { createMediaRecord } from '@/app/actions/media'
+import { createMediaRecord, updateMediaThumbnail } from '@/app/actions/media'
 import {
   initiateMultipartUpload,
   completeMultipartUpload,
   abortMultipartUpload,
+  getPresignedThumbnailUploadUrl,
 } from '@/app/actions/upload'
+import { captureVideoThumbnail } from '@/lib/captureVideoThumbnail'
 
 const MAX_CONCURRENT = 5
 const PART_SIZE = 8 * 1024 * 1024 // 8 MB — must match upload.ts
@@ -361,6 +363,34 @@ export function useUploadQueue(): UploadQueueState {
       updateFile(id, { status: 'done', mediaId: media.id })
       queryClient.invalidateQueries({ queryKey: ['gallery', eventId] })
       queryClient.invalidateQueries({ queryKey: ['visitor-gallery', eventId] })
+
+      // For videos: capture a thumbnail client-side and upload it immediately
+      // so it appears in the grid before the worker finishes processing.
+      if (formatFileType(file.type) === 'video') {
+        const mediaId = media.id
+        const originalFile = fileEntry.file
+        ;(async () => {
+          try {
+            const thumbnail = await captureVideoThumbnail(originalFile)
+            if (!thumbnail) return
+            const thumbnailKey = `thumbnails/${eventId}/${mediaId}.jpg`
+            const { url, error: urlError } = await getPresignedThumbnailUploadUrl(thumbnailKey)
+            if (urlError || !url) return
+            const res = await fetch(url, {
+              method: 'PUT',
+              body: thumbnail,
+              headers: { 'Content-Type': 'image/jpeg' },
+            })
+            if (!res.ok) return
+            await updateMediaThumbnail(mediaId, thumbnailKey)
+            queryClient.invalidateQueries({ queryKey: ['gallery', eventId] })
+            queryClient.invalidateQueries({ queryKey: ['visitor-gallery', eventId] })
+          } catch {
+            // Non-fatal — worker will generate the thumbnail during processing
+          }
+        })()
+      }
+
       drainQueue(eventId)
     },
     [updateFile, queryClient]
